@@ -1,10 +1,9 @@
-import { TraitViewData } from "@actor/data/base.ts";
 import { ActorPF2e, CharacterPF2e, HazardPF2e, NPCPF2e } from "@actor";
+import { TraitViewData } from "@actor/data/base.ts";
 import {
     DamageDiceOverride,
     DamageDicePF2e,
     DiceModifierPF2e,
-    MODIFIER_TYPE,
     ModifierPF2e,
     PROFICIENCY_RANK_OPTION,
     StatisticModifier,
@@ -12,7 +11,7 @@ import {
 import { AbilityString } from "@actor/types.ts";
 import { MeleePF2e, WeaponPF2e } from "@item";
 import { NPCAttackDamage } from "@item/melee/data.ts";
-import { getPropertyRuneAdjustments, getPropertyRuneDice } from "@item/physical/runes.ts";
+import { getPropertyRuneDice, getPropertyRuneModifierAdjustments } from "@item/physical/runes.ts";
 import { WeaponDamage } from "@item/weapon/data.ts";
 import { RollNotePF2e } from "@module/notes.ts";
 import {
@@ -24,7 +23,7 @@ import {
 } from "@module/rules/helpers.ts";
 import { CritSpecEffect, PotencySynthetic, StrikingSynthetic } from "@module/rules/synthetics.ts";
 import { DEGREE_OF_SUCCESS, DegreeOfSuccessIndex } from "@system/degree-of-success.ts";
-import { mapValues, objectHasKey, sluggify } from "@util";
+import { mapValues, objectHasKey, setHasElement, sluggify } from "@util";
 import { AssembledFormula, createDamageFormula, parseTermsFromSimpleFormula } from "./formula.ts";
 import { nextDamageDieSize } from "./helpers.ts";
 import { DamageModifierDialog } from "./modifier-dialog.ts";
@@ -33,9 +32,11 @@ import {
     DamageDieSize,
     DamageRollContext,
     MaterialDamageEffect,
+    WeaponBaseDamageData,
     WeaponDamageFormulaData,
     WeaponDamageTemplate,
 } from "./types.ts";
+import { DAMAGE_DIE_FACES } from "./values.ts";
 
 class WeaponDamagePF2e {
     static async fromNPCAttack({
@@ -108,7 +109,7 @@ class WeaponDamagePF2e {
         const { options } = context;
         if (baseDamage.die === null && baseDamage.modifier > 0) {
             baseDamage.dice = 0;
-        } else if (baseDamage.dice === 0 && baseDamage.modifier === 0) {
+        } else if (!weapon.dealsDamage) {
             return null;
         }
 
@@ -150,7 +151,7 @@ class WeaponDamagePF2e {
                     label: CONFIG.PF2E.abilities.str,
                     ability: "str",
                     modifier: modifierValue,
-                    type: MODIFIER_TYPE.ABILITY,
+                    type: "ability",
                     adjustments: extractModifierAdjustments(actor.synthetics.modifierAdjustments, baseDomains, "str"),
                 });
                 modifiers.push(strModifier);
@@ -160,13 +161,17 @@ class WeaponDamagePF2e {
         // Find the best active ability modifier in order to get the correct synthetics selectors
         const resolvables = { weapon };
         const injectables = resolvables;
-        const fromDamageSelector = extractModifiers(actor.synthetics, baseDomains, { resolvables, injectables });
+        const fromDamageSelector = extractModifiers(actor.synthetics, baseDomains, {
+            resolvables,
+            injectables,
+            test: options,
+        });
         const modifiersAndSelectors = modifiers
             .concat(fromDamageSelector)
             .filter((m): m is ModifierPF2e & { ability: AbilityString } => m.type === "ability")
-            .flatMap((modifier) => {
+            .map((modifier) => {
                 const selectors = this.#getSelectors(weapon, modifier.ability, proficiencyRank);
-                return modifier.predicate.test(options) ? { modifier, selectors } : [];
+                return { modifier, selectors };
             });
 
         const { selectors } =
@@ -189,11 +194,12 @@ class WeaponDamagePF2e {
             }
 
             // Two-Hand trait
-            const twoHandTrait = weaponTraits.find(
-                (t) => t.startsWith("two-hand-") && (weapon.system.equipped.handsHeld ?? 0) >= 2
-            );
-            if (twoHandTrait) {
-                baseDamage.die = twoHandTrait.substring(twoHandTrait.lastIndexOf("-") + 1) as DamageDieSize;
+            const handsHeld = weapon.system.equipped.handsHeld ?? 0;
+            const baseDieFaces = Number(baseDamage.die?.replace("d", "") ?? "NaN");
+            const twoHandSize = weaponTraits.find((t) => t.startsWith("two-hand-"))?.replace("two-hand-", "");
+            const twoHandFaces = Number(twoHandSize?.replace("d", "") ?? "NaN");
+            if (handsHeld === 2 && setHasElement(DAMAGE_DIE_FACES, twoHandSize) && twoHandFaces > baseDieFaces) {
+                baseDamage.die = twoHandSize;
             }
 
             // Splash damage
@@ -349,8 +355,8 @@ class WeaponDamagePF2e {
 
         // Property Runes
         const propertyRunes = weapon.isOfType("weapon") ? weapon.system.runes.property : [];
-        damageDice.push(...getPropertyRuneDice(propertyRunes));
-        const propertyRuneAdjustments = getPropertyRuneAdjustments(propertyRunes);
+        damageDice.push(...getPropertyRuneDice(propertyRunes, options));
+        const propertyRuneAdjustments = getPropertyRuneModifierAdjustments(propertyRunes);
         const ignoredResistances = propertyRunes.flatMap(
             (r) => CONFIG.PF2E.runes.weapon.property[r].damage?.ignoredResistances ?? []
         );
@@ -477,11 +483,24 @@ class WeaponDamagePF2e {
         // Synthetics
 
         // Separate damage modifiers into persistent and all others for stacking rules processing
-        const synthetics = extractDamageModifiers(actor.synthetics, selectors, { resolvables, injectables });
+        const synthetics = extractDamageModifiers(actor.synthetics, selectors, {
+            resolvables,
+            injectables,
+            test: options,
+        });
         const testedModifiers = [
             ...new StatisticModifier("strike-damage", [...modifiers, ...synthetics.main], options).modifiers,
             ...new StatisticModifier("strike-persistent", synthetics.persistent, options).modifiers,
         ];
+
+        const base: WeaponBaseDamageData = {
+            diceNumber: baseDamage.die ? baseDamage.dice : 0,
+            dieSize: baseDamage.die,
+            modifier: baseDamage.modifier,
+            damageType: baseDamage.damageType,
+            category: "category" in baseDamage && baseDamage.category === "persistent" ? "persistent" : null,
+            materials: Array.from(materials),
+        };
 
         // Damage dice from synthetics
         damageDice.push(
@@ -493,14 +512,7 @@ class WeaponDamagePF2e {
         );
 
         const damage: WeaponDamageFormulaData = {
-            base: {
-                diceNumber: baseDamage.die ? baseDamage.dice : 0,
-                dieSize: baseDamage.die,
-                modifier: baseDamage.modifier,
-                damageType: baseDamage.damageType,
-                category: "category" in baseDamage && baseDamage.category === "persistent" ? "persistent" : null,
-                materials: Array.from(materials),
-            },
+            base: [base],
             // CRB p. 279, Counting Damage Dice: Effects based on a weapon's number of damage dice include
             // only the weapon's damage die plus any extra dice from a striking rune. They don't count
             // extra dice from abilities, critical specialization effects, property runes, weapon traits,
@@ -510,40 +522,17 @@ class WeaponDamagePF2e {
             ignoredResistances,
         };
 
-        // include dice number and size in damage tag
-        for (const dice of damage.dice) {
-            dice.label = game.i18n.localize(dice.label ?? dice.slug);
-            if (dice.diceNumber > 0 && dice.dieSize) {
-                dice.label += ` +${dice.diceNumber}${dice.dieSize}`;
-            } else if (damage.base.dieSize && dice.diceNumber > 0) {
-                dice.label += ` +${dice.diceNumber}${damage.base.dieSize}`;
-            } else if (dice.dieSize) {
-                dice.label += ` ${dice.dieSize}`;
-            }
-            if (
-                dice.category &&
-                dice.category !== "persistent" &&
-                (dice.diceNumber > 0 || dice.dieSize) &&
-                (!dice.damageType ||
-                    (dice.damageType === damage.base.damageType && dice.category !== damage.base.category))
-            ) {
-                dice.label += ` ${dice.category}`;
-            }
-            dice.enabled = dice.predicate.test(options);
-            dice.ignored = !dice.enabled;
+        // If a weapon deals no base damage, remove all bonuses, penalties, and modifiers to it.
+        if (!(damage.base[0].diceNumber || damage.base[0].modifier)) {
+            damage.dice = damage.dice.filter((d) => ![null, "precision"].includes(d.category));
+            damage.modifiers = damage.modifiers.filter((m) => ![null, "precision"].includes(m.category));
         }
 
         const excludeFrom = weapon.isOfType("weapon") ? weapon : null;
         this.#excludeDamage({ actor, weapon: excludeFrom, modifiers: [...modifiers, ...damageDice], options });
 
         if (BUILD_MODE === "development" && !context.skipDialog) {
-            const rolled = await new DamageModifierDialog({
-                modifiers: damage.modifiers,
-                dice: damage.dice,
-                context,
-                baseDamageType: baseDamage.damageType,
-            }).resolve();
-
+            const rolled = await new DamageModifierDialog({ damage, context }).resolve();
             if (!rolled) return null;
         }
 
@@ -578,8 +567,9 @@ class WeaponDamagePF2e {
     static #finalizeDamage(damage: WeaponDamageFormulaData, degree?: DegreeOfSuccessIndex): AssembledFormula | null;
     static #finalizeDamage(damage: WeaponDamageFormulaData, degree: DegreeOfSuccessIndex): AssembledFormula | null {
         damage = deepClone(damage);
-        const { base } = damage;
+        const base = damage.base.at(0);
         const critical = degree === DEGREE_OF_SUCCESS.CRITICAL_SUCCESS;
+        if (!base) return null;
 
         // Test that a damage modifier is compatible with the prior check result
         const outcomeMatches = (m: { critical: boolean | null }): boolean =>
@@ -604,7 +594,7 @@ class WeaponDamagePF2e {
                 base.dieSize = override.override?.dieSize ?? base.dieSize;
                 base.damageType = override.override?.damageType ?? base.damageType;
                 base.diceNumber = override.override?.diceNumber ?? base.diceNumber;
-                for (const die of damage.dice.filter((d) => d.slug.startsWith("deadly-"))) {
+                for (const die of damage.dice.filter((d) => /^(?:deadly|fatal)-/.test(d.slug))) {
                     die.damageType = override.override?.damageType ?? die.damageType;
                 }
             }

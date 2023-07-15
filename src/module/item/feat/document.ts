@@ -1,16 +1,19 @@
 import { ActorPF2e } from "@actor";
 import { FeatGroup } from "@actor/character/feats.ts";
+import { ActionCost, Frequency } from "@item/data/base.ts";
 import { ItemSummaryData } from "@item/data/index.ts";
-import { Frequency } from "@item/data/base.ts";
 import { OneToThree } from "@module/data.ts";
 import { UserPF2e } from "@module/user/index.ts";
 import { getActionTypeLabel, sluggify } from "@util";
-import { ItemPF2e } from "../index.ts";
+import * as R from "remeda";
+import { HeritagePF2e, ItemPF2e } from "../index.ts";
 import { FeatSource, FeatSystemData } from "./data.ts";
+import { featCanHaveKeyOptions } from "./helpers.ts";
 import { FeatCategory, FeatTrait } from "./types.ts";
 
 class FeatPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends ItemPF2e<TParent> {
     declare group: FeatGroup | null;
+    declare grants: (FeatPF2e | HeritagePF2e)[];
 
     get category(): FeatCategory {
         return this.system.category;
@@ -24,7 +27,7 @@ class FeatPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends Item
         return new Set(this.system.traits.value);
     }
 
-    get actionCost(): { type: "action" | "reaction" | "free"; value: OneToThree | null } | null {
+    get actionCost(): ActionCost | null {
         const actionType = this.system.actionType.value || "passive";
         if (actionType === "passive") return null;
 
@@ -104,13 +107,35 @@ class FeatPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends Item
         if (this.actor && this.system.frequency) {
             this.system.frequency.value ??= this.system.frequency.max;
         }
+
+        this.system.subfeatures = mergeObject({ keyOptions: [] }, this.system.subfeatures ?? {});
     }
 
     /** Set a self roll option for this feat(ure) */
     override prepareActorData(this: FeatPF2e<ActorPF2e>): void {
+        const { actor } = this;
         const prefix = this.isFeature ? "feature" : "feat";
         const slug = this.slug ?? sluggify(this.name);
-        this.actor.rollOptions.all[`${prefix}:${slug}`] = true;
+        actor.rollOptions.all[`${prefix}:${slug}`] = true;
+
+        const { subfeatures } = this.system;
+        if (!featCanHaveKeyOptions(this)) subfeatures.keyOptions = [];
+
+        // Add key ability options to parent's list
+        if (actor.isOfType("character") && subfeatures.keyOptions.length > 0) {
+            actor.system.build.abilities.keyOptions = R.uniq([
+                ...actor.system.build.abilities.keyOptions,
+                ...subfeatures.keyOptions,
+            ]);
+        }
+    }
+
+    override prepareSiblingData(): void {
+        const itemGrants = this.flags.pf2e.itemGrants;
+        this.grants = Object.values(itemGrants).flatMap((grant) => {
+            const item = this.actor?.items.get(grant.id);
+            return (item?.isOfType("feat") && !item.system.location) || item?.isOfType("heritage") ? [item] : [];
+        });
     }
 
     override async getChatData(
@@ -142,7 +167,7 @@ class FeatPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends Item
         data: PreDocumentId<FeatSource>,
         options: DocumentModificationContext<TParent>,
         user: UserPF2e
-    ): Promise<void> {
+    ): Promise<boolean | void> {
         // In case this was copied from an actor, clear the location if there's no parent.
         if (!this.parent) {
             this.updateSource({ "system.location": null });
@@ -158,7 +183,7 @@ class FeatPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends Item
         changed: DeepPartial<this["_source"]>,
         options: DocumentModificationContext<TParent>,
         user: UserPF2e
-    ): Promise<void> {
+    ): Promise<boolean | void> {
         // Ensure an empty-string `location` property is null
         if (typeof changed.system?.location === "string") {
             changed.system.location ||= null;
@@ -193,7 +218,7 @@ class FeatPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends Item
             mergeObject(changed, { system: { maxTakable: 1 } });
         }
 
-        await super._preUpdate(changed, options, user);
+        return super._preUpdate(changed, options, user);
     }
 
     /** Warn the owning user(s) if this feat was taken despite some restriction */

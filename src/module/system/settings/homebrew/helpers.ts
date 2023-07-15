@@ -1,4 +1,4 @@
-import { BaseWeaponProficiencyKey, WeaponGroupProficiencyKey } from "@actor/character/data/index.ts";
+import { BaseWeaponProficiencyKey, WeaponGroupProficiencyKey } from "@actor/character/data.ts";
 import { ActorSourcePF2e } from "@actor/data/index.ts";
 import { ItemSourcePF2e, MeleeSource, WeaponSource } from "@item/data/index.ts";
 import { MigrationBase } from "@module/migration/base.ts";
@@ -119,13 +119,7 @@ export function prepareCleanup(listKey: HomebrewTraitKey, deletions: string[]): 
                     }
                     break;
                 }
-                case "magicSchools": {
-                    if (source.type === "spell") {
-                        const school = source.system.school;
-                        school.value = deletions.includes(school.value ?? "") ? "evocation" : school.value;
-                    }
-                    break;
-                }
+                case "magicSchools":
                 case "spellTraits": {
                     if (source.type === "spell") {
                         const traits = source.system.traits;

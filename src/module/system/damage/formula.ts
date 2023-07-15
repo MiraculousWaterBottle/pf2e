@@ -1,6 +1,7 @@
-import { DamageDicePF2e, ModifierPF2e } from "@actor/modifiers.ts";
-import { DegreeOfSuccessIndex, DEGREE_OF_SUCCESS } from "@system/degree-of-success.ts";
-import { groupBy, sum, sortBy } from "@util";
+import { DamageDicePF2e } from "@actor/modifiers.ts";
+import { DEGREE_OF_SUCCESS, DegreeOfSuccessIndex } from "@system/degree-of-success.ts";
+import { addSign, groupBy, sortBy, sum } from "@util";
+import * as R from "remeda";
 import {
     CriticalInclusion,
     DamageCategoryUnique,
@@ -41,21 +42,21 @@ function createDamageFormula(
     }
 
     const critical = degree === DEGREE_OF_SUCCESS.CRITICAL_SUCCESS;
-    const base = Array.isArray(damage.base) ? damage.base : [damage.base];
-    if (!base.length) {
+    if (!damage.base.length) {
         return null;
     }
 
     // Group dice by damage type
     const typeMap: DamageTypeMap = new Map();
-    for (const baseEntry of base) {
+    for (const baseEntry of damage.base) {
         const list = typeMap.get(baseEntry.damageType) ?? [];
         typeMap.set(baseEntry.damageType, list);
 
-        if ("terms" in baseEntry) {
+        if (baseEntry.terms) {
             list.push(...baseEntry.terms.map((t) => ({ ...baseEntry, ...t, label: null, critical: null })));
         } else if ((baseEntry.diceNumber && baseEntry.dieSize) || baseEntry.modifier) {
-            const { diceNumber, dieSize, modifier, damageType } = baseEntry;
+            const { diceNumber, dieSize, damageType } = baseEntry;
+            const modifier = baseEntry.modifier ?? 0;
             const label = (() => {
                 const diceSection = diceNumber ? `${diceNumber}${dieSize}` : null;
                 if (!diceSection) return String(modifier);
@@ -68,7 +69,7 @@ function createDamageFormula(
             list.push({
                 label,
                 dice: diceNumber && dieSize ? { number: diceNumber, faces: Number(dieSize.replace("d", "")) } : null,
-                modifier: modifier ?? 0,
+                modifier,
                 critical: null,
                 damageType,
                 category: baseEntry.category,
@@ -77,18 +78,22 @@ function createDamageFormula(
         }
     }
 
-    // Hold onto base terms for matching reasons (such as adding extra base dice)
-    const baseTerms = [...typeMap.values()].flat();
+    // Sometimes a weapon may add base damage as bonus modifiers or dice. We need to auto-generate these
+    const BONUS_BASE_LABELS = ["PF2E.ConditionTypePersistent"].map((l) => game.i18n.localize(l));
 
-    // Dice always stack
-    for (const dice of damage.dice.filter((d) => d.enabled)) {
-        const damageType = dice.damageType ?? baseTerms[0].damageType;
-        const matchingBase = baseTerms.find((b) => b.damageType === dice.damageType) ?? baseTerms[0];
-        const faces = Number(dice.dieSize?.replace("d", "")) || matchingBase.dice?.faces || null;
+    // Test that a damage modifier or dice partial is compatible with the prior check result
+    const outcomeMatches = (m: { critical: boolean | null }): boolean => critical || m.critical !== true;
+
+    // Add damage dice. Dice always stack
+    for (const dice of damage.dice.filter((d) => d.enabled && outcomeMatches(d))) {
+        const matchingBase = damage.base.find((b) => b.damageType === dice.damageType) ?? damage.base[0];
+        const baseDieSize = Number(matchingBase.dieSize?.replace("d", "")) || matchingBase.terms?.[0].dice?.faces;
+        const faces = Number(dice.dieSize?.replace("d", "")) || baseDieSize || null;
+        const damageType = dice.damageType ?? matchingBase.damageType;
         if (dice.diceNumber > 0 && faces) {
             const list = typeMap.get(damageType) ?? [];
             list.push({
-                label: dice.label,
+                label: BONUS_BASE_LABELS.includes(dice.label) ? null : `${dice.label} +${dice.diceNumber}d${faces}`,
                 dice: { number: dice.diceNumber, faces },
                 modifier: 0,
                 damageType,
@@ -99,21 +104,14 @@ function createDamageFormula(
         }
     }
 
-    // Test that a damage modifier or dice partial is compatible with the prior check result
-    const outcomeMatches = (m: { critical: boolean | null }): boolean => critical || m.critical !== true;
+    // Add modifiers
+    for (const modifier of damage.modifiers.filter((m) => m.enabled && outcomeMatches(m))) {
+        const matchingBase = damage.base.find((b) => b.damageType === modifier.damageType) ?? damage.base[0];
+        const damageType = modifier.damageType ?? matchingBase.damageType;
 
-    const modifiers = damage.modifiers
-        .filter((m) => m.enabled)
-        .flatMap((modifier): ModifierPF2e | never[] => {
-            modifier.damageType ??= base[0].damageType;
-            return outcomeMatches(modifier) ? modifier : [];
-        });
-
-    for (const modifier of modifiers) {
-        const damageType = modifier.damageType ?? base[0].damageType;
         const list = typeMap.get(damageType) ?? [];
         list.push({
-            label: `${modifier.label} ${modifier.value < 0 ? "" : "+"}${modifier.value}`,
+            label: BONUS_BASE_LABELS.includes(modifier.label) ? null : `${modifier.label} ${addSign(modifier.value)}`,
             dice: null,
             modifier: modifier.value,
             damageType,
@@ -169,8 +167,10 @@ function instancesFromTypeMap(
             return sumExpression(createPartialFormulas(groups, { criticalInclusion }));
         })();
 
+        // Build final damage, and exit early if its 0 persistent dammage
         const summedDamage = sumExpression(degree ? [nonCriticalDamage, criticalDamage] : [nonCriticalDamage]);
-        const enclosed = ensureValidFormulaHead(summedDamage);
+        const enclosed = ensureValidFormulaHead(summedDamage) || "0";
+        if (enclosed === "0" && persistent) return [];
 
         const flavor = ((): string => {
             const typeFlavor = damageType === "untyped" && !persistent ? [] : [damageType];
@@ -188,12 +188,15 @@ function instancesFromTypeMap(
                 const partials = groups.get(c) ?? [];
                 const breakdownDamage = partials.filter((e): e is DamagePartialWithLabel => e.label !== null);
 
-                // Null labels are assumed to be base damage. Combine them and create a single tag.
-                const unlabeled = partials.filter((e) => e.label === null);
-                if (unlabeled.length) {
+                // Null labels are assumed to be base damage. Combine them and create a single breakdown component
+                const leadingTerms = partials.filter(
+                    (p) =>
+                        p.label === null && (p.modifier || p.dice?.number || partials.every((pp) => pp.label === null))
+                );
+                if (leadingTerms.length) {
                     const append = c === "splash" ? ` ${game.i18n.localize("PF2E.Damage.RollFlavor.splash")}` : "";
-                    const label = createSimpleFormula(unlabeled) + append;
-                    breakdownDamage.splice(0, 0, { ...unlabeled[0], label });
+                    const label = createSimpleFormula(leadingTerms) + append;
+                    breakdownDamage.unshift({ ...leadingTerms[0], label });
                 }
 
                 return breakdownDamage;
@@ -232,12 +235,14 @@ function createPartialFormulas(
         const requestedPartials = (partials.get(category) ?? []).filter((p) => criticalInclusion.includes(p.critical));
         const term = ((): string => {
             const expression = createSimpleFormula(requestedPartials, { doubleDice });
+            if (expression === "0") {
+                return "";
+            }
             return ["precision", "splash"].includes(category ?? "") && hasOperators(expression)
                 ? `(${expression})`
                 : expression;
         })();
         const flavored = term && category && category !== "persistent" ? `${term}[${category}]` : term;
-
         return flavored || [];
     });
 }
@@ -258,7 +263,8 @@ function combinePartialTerms(terms: DamagePartialTerm[]): DamagePartialTerm[] {
         dice: { ...terms[0].dice, number: sum(terms.map((d) => d.dice.number)) },
     }));
 
-    return [...combinedDice, constantTerm].filter((t): t is DamagePartialTerm => !!t);
+    const combined = R.compact([...combinedDice, constantTerm]);
+    return combined.length ? combined : [{ dice: null, modifier: 0 }];
 }
 
 /** Combines damage dice and modifiers into a single formula, ignoring the damage type and category. */
@@ -276,10 +282,11 @@ function createSimpleFormula(terms: DamagePartialTerm[], { doubleDice }: { doubl
     });
 
     // Create the final term. Double the modifier here if dice doubling is enabled
-    return [diceTerms.join(" + "), Math.abs(constant)]
+    const result = [diceTerms.join(" + "), Math.abs(constant)]
         .filter((e) => !!e)
         .map((e) => (typeof e === "number" && doubleDice ? `2 * ${e}` : e))
         .join(constant > 0 ? " + " : " - ");
+    return result || "0"; // Empty string is an invalid formula
 }
 
 /**

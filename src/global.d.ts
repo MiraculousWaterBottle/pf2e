@@ -1,6 +1,8 @@
+/// <reference types="vite/client" />
+
 import { ActorPF2e } from "@actor/base.ts";
 import { AutomaticBonusProgression } from "@actor/character/automatic-bonus-progression.ts";
-import { FeatCategoryOptions } from "@actor/character/feats.ts";
+import { FeatGroupOptions } from "@actor/character/feats.ts";
 import { CheckModifier, MODIFIER_TYPE, ModifierPF2e, StatisticModifier } from "@actor/modifiers.ts";
 import { ItemPF2e } from "@item/base.ts";
 import { CoinsPF2e } from "@item/physical/helpers.ts";
@@ -139,6 +141,17 @@ declare global {
             CompendiumDirectoryPF2e,
             EncounterTrackerPF2e<EncounterPF2e | null>
         >;
+
+        // Add functions to the `Math` namespace for use in `Roll` formulas
+        interface Math {
+            eq: (a: number, b: number) => boolean;
+            gt: (a: number, b: number) => boolean;
+            gte: (a: number, b: number) => boolean;
+            lt: (a: number, b: number) => boolean;
+            lte: (a: number, b: number) => boolean;
+            ne: (a: number, b: number) => boolean;
+            ternary: (condition: boolean | number, ifTrue: number, ifFalse: number) => number;
+        }
     }
 
     interface Window {
@@ -173,6 +186,7 @@ declare global {
         get(module: "pf2e", setting: "metagame_secretDamage"): boolean;
         get(module: "pf2e", setting: "metagame_showDC"): boolean;
         get(module: "pf2e", setting: "metagame_showResults"): boolean;
+        get(module: "pf2e", setting: "metagame_showPartyStats"): boolean;
         get(module: "pf2e", setting: "metagame_tokenSetsNameVisibility"): boolean;
 
         get(module: "pf2e", setting: "tokens.autoscale"): boolean;
@@ -185,15 +199,18 @@ declare global {
         get(module: "pf2e", setting: "worldClock.worldCreatedOn"): string;
 
         get(module: "pf2e", setting: "campaignFeats"): boolean;
-        get(module: "pf2e", setting: "campaignFeatSections"): FeatCategoryOptions[];
+        get(module: "pf2e", setting: "campaignFeatSections"): FeatGroupOptions[];
+        get(module: "pf2e", setting: "campaignType"): string;
 
         get(module: "pf2e", setting: "homebrew.weaponCategories"): HomebrewTag<"weaponCategories">[];
         get(module: "pf2e", setting: HomebrewTraitSettingsKey): HomebrewTag[];
         get(module: "pf2e", setting: "homebrew.damageTypes"): CustomDamageData[];
 
         get(module: "pf2e", setting: "compendiumBrowserPacks"): CompendiumBrowserSettings;
+        get(module: "pf2e", setting: "compendiumBrowserSources"): CompendiumBrowserSources;
         get(module: "pf2e", setting: "critFumbleButtons"): boolean;
         get(module: "pf2e", setting: "critRule"): "doubledamage" | "doubledice";
+        get(module: "pf2e", setting: "dataTools"): boolean;
         get(module: "pf2e", setting: "deathIcon"): ImageFilePath;
         get(module: "pf2e", setting: "drawCritFumble"): boolean;
         get(module: "pf2e", setting: "enabledRulesUI"): boolean;
@@ -228,6 +245,7 @@ type ConfiguredConfig = Config<
     AmbientLightDocumentPF2e<ScenePF2e | null>,
     ActiveEffectPF2e<ActorPF2e | ItemPF2e | null>,
     ActorPF2e,
+    ActorDeltaPF2e,
     ChatLogPF2e,
     ChatMessagePF2e,
     EncounterPF2e,

@@ -1,7 +1,7 @@
 import { ActorPF2e } from "@actor";
 import { StrikeData } from "@actor/data/base.ts";
 import { ItemPF2e, ItemProxyPF2e } from "@item";
-import { traditionSkills, TrickMagicItemEntry } from "@item/spellcasting-entry/trick.ts";
+import { TrickMagicItemEntry, traditionSkills } from "@item/spellcasting-entry/trick.ts";
 import { UserPF2e } from "@module/user/index.ts";
 import { ScenePF2e, TokenDocumentPF2e } from "@scene/index.ts";
 import { InlineRollLinks } from "@scripts/ui/inline-roll-links.ts";
@@ -120,9 +120,9 @@ class ChatMessagePF2e extends ChatMessage {
         }
 
         if (item?.isOfType("spell")) {
-            const spellVariant = this.flags.pf2e.spellVariant;
-            const castLevel = this.flags.pf2e.casting?.level ?? item.level;
-            const modifiedSpell = item.loadVariant({ overlayIds: spellVariant?.overlayIds, castLevel });
+            const overlayIds = this.flags.pf2e.origin?.variant?.overlays;
+            const castLevel = this.flags.pf2e.origin?.castLevel ?? item.rank;
+            const modifiedSpell = item.loadVariant({ overlayIds, castLevel });
             return modifiedSpell ?? item;
         }
 
@@ -156,8 +156,9 @@ class ChatMessagePF2e extends ChatMessage {
 
     /** Get stringified item source from the DOM-rendering of this chat message */
     getItemFromDOM(): ItemPF2e<ActorPF2e> | null {
-        const $domMessage = $("ol#chat-log").children(`li[data-message-id="${this.id}"]`);
-        const sourceString = $domMessage.find("div.pf2e.item-card").attr("data-embedded-item") ?? "null";
+        const html = ui.chat.element[0];
+        const messageElem = htmlQuery(html, `#chat-log > li[data-message-id="${this.id}"]`);
+        const sourceString = htmlQuery(messageElem, ".pf2e.item-card")?.dataset.embeddedItem ?? "null";
         try {
             const itemSource = JSON.parse(sourceString);
             const item = itemSource
@@ -248,12 +249,16 @@ class ChatMessagePF2e extends ChatMessage {
             });
         }
 
-        html.addEventListener("mouseenter", () => this.onHoverIn());
-        html.addEventListener("mouseleave", () => this.onHoverOut());
+        // Remove revert damage button based on user permissions
+        const appliedDamageFlag = this.flags.pf2e.appliedDamage;
+        if (!appliedDamageFlag?.isReverted) {
+            if (!this.actor?.isOwner) {
+                htmlQuery(html, "button[data-action=revert-damage]")?.remove();
+            }
+        }
 
-        const sender = html.querySelector<HTMLElement>(".message-sender");
-        sender?.addEventListener("click", this.onClickSender.bind(this));
-        sender?.addEventListener("dblclick", this.onClickSender.bind(this));
+        html.addEventListener("mouseenter", (event) => this.#onHoverIn(event));
+        html.addEventListener("mouseleave", (event) => this.#onHoverOut(event));
 
         UserVisibilityPF2e.processMessageSender(this, html);
         if (!actor && this.content) UserVisibilityPF2e.process(html, { document: this });
@@ -261,29 +266,18 @@ class ChatMessagePF2e extends ChatMessage {
         return $html;
     }
 
-    private onHoverIn(): void {
+    /** Highlight the message's corresponding token on the canvas */
+    #onHoverIn(nativeEvent: MouseEvent | PointerEvent): void {
         if (!canvas.ready) return;
         const token = this.token?.object;
         if (token?.isVisible && !token.controlled) {
-            token.emitHoverIn();
+            token.emitHoverIn(nativeEvent);
         }
     }
 
-    private onHoverOut(): void {
-        if (canvas.ready) this.token?.object?.emitHoverOut();
-    }
-
-    private onClickSender(event: MouseEvent): void {
-        if (!canvas) return;
-        const token = this.token?.object;
-        if (token?.isVisible && token.isOwner) {
-            token.controlled ? token.release() : token.control({ releaseOthers: !event.shiftKey });
-            // If a double click, also pan to the token
-            if (event.type === "dblclick") {
-                const scale = Math.max(1, canvas.stage.scale.x);
-                canvas.animatePan({ ...token.center, scale, duration: 1000 });
-            }
-        }
+    /** Remove the token highlight */
+    #onHoverOut(nativeEvent: MouseEvent | PointerEvent): void {
+        if (canvas.ready) this.token?.object?.emitHoverOut(nativeEvent);
     }
 
     protected override _onCreate(

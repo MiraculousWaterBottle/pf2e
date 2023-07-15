@@ -27,6 +27,7 @@
         "removeComments": false,
         "resolveJsonModule": true,
         "useDefineForClassFields": true,
+        "noErrorTruncation": true,
         "paths": {
             "@actor": [
                 "src/module/actor/index.ts"
@@ -63,23 +64,19 @@
             ]
         },
         "types": [
-            "gsap",
-            "handlebars",
             "jest",
             "jquery",
             "node",
-            "tooltipster",
-            "vite/client"
+            "tooltipster"
         ],
         "typeRoots": [
             "node_modules/@types",
-            "node_modules/handlebars",
             "types/foundry"
         ]
     },
     "watchOptions": {
         "excludeDirectories": [
-            "packs/data/",
+            "packs/",
             "static/packs/"
         ]
     }

@@ -17,15 +17,16 @@ import { CheckPF2e, CheckRoll } from "@system/check/index.ts";
 import { DamagePF2e, DamageRollContext } from "@system/damage/index.ts";
 import { DamageRoll } from "@system/damage/roll.ts";
 import { WeaponDamagePF2e } from "@system/damage/weapon.ts";
+import { PredicatePF2e } from "@system/predication.ts";
 import { AttackRollParams, DamageRollParams } from "@system/rolls.ts";
 import { ErrorPF2e, getActionGlyph, getActionIcon, sluggify } from "@util";
-import { ActorSourcePF2e } from "./data/index.ts";
+import { StrikeAttackTraits } from "./creature/helpers.ts";
 import { DamageRollFunction, TraitViewData } from "./data/base.ts";
-import { CheckModifier, MODIFIER_TYPE, ModifierPF2e, StatisticModifier } from "./modifiers.ts";
+import { ActorSourcePF2e } from "./data/index.ts";
+import { CheckModifier, ModifierPF2e, StatisticModifier } from "./modifiers.ts";
 import { NPCStrike } from "./npc/data.ts";
 import { AttackItem } from "./types.ts";
-import { ANIMAL_COMPANION_SOURCE_ID, CONSTRUCT_COMPANION_SOURCE_ID } from "./values.ts";
-import { StrikeAttackTraits } from "./creature/helpers.ts";
+import { ANIMAL_COMPANION_SOURCE_IDS, CONSTRUCT_COMPANION_SOURCE_IDS } from "./values.ts";
 
 /** Reset and rerender a provided list of actors. Omit argument to reset all world and synthetic actors */
 async function resetActors(actors?: Iterable<ActorPF2e>, { rerender = true } = {}): Promise<void> {
@@ -146,6 +147,21 @@ function calculateMAPs(
     return [baseMap, ...fromSynthetics].reduce((lowest, p) => (p.map1 > lowest.map1 ? p : lowest));
 }
 
+/** Whether flanking puts this actor off-guard */
+function isOffGuardFromFlanking(actor: ActorPF2e): boolean {
+    if (!actor.isOfType("creature")) return false;
+
+    const { flanking } = actor.attributes;
+    if (!flanking.flankable) return false;
+
+    const rollOptions = actor.getRollOptions();
+    if (typeof flanking.flatFootable === "number") {
+        return !PredicatePF2e.test([{ lte: ["origin:level", flanking.flatFootable] }], rollOptions);
+    }
+
+    return flanking.flatFootable;
+}
+
 /** Create a strike statistic from a melee item: for use by NPCs and Hazards */
 function strikeFromMeleeItem(item: MeleePF2e<ActorPF2e>): NPCStrike {
     const { ability, isMelee, isThrown } = item;
@@ -160,14 +176,13 @@ function strikeFromMeleeItem(item: MeleePF2e<ActorPF2e>): NPCStrike {
     const meleeOrRanged = isMelee ? "melee" : "ranged";
 
     const domains = [
-        "attack",
-        "mundane-attack",
         `${slug}-attack`,
         `${item.id}-attack`,
         `${unarmedOrWeapon}-attack-roll`,
         `${meleeOrRanged}-attack-roll`,
         "strike-attack-roll",
         "attack-roll",
+        "attack",
         "all",
     ];
 
@@ -255,8 +270,8 @@ function strikeFromMeleeItem(item: MeleePF2e<ActorPF2e>): NPCStrike {
 
     strike.variants = [
         null,
-        new ModifierPF2e("PF2E.MultipleAttackPenalty", multipleAttackPenalty.map1, MODIFIER_TYPE.UNTYPED),
-        new ModifierPF2e("PF2E.MultipleAttackPenalty", multipleAttackPenalty.map2, MODIFIER_TYPE.UNTYPED),
+        new ModifierPF2e("PF2E.MultipleAttackPenalty", multipleAttackPenalty.map1, "untyped"),
+        new ModifierPF2e("PF2E.MultipleAttackPenalty", multipleAttackPenalty.map2, "untyped"),
     ].map((map, mapIncreases) => {
         const label = map
             ? game.i18n.format("PF2E.MAPAbbreviationLabel", { penalty: map.modifier })
@@ -334,13 +349,15 @@ function strikeFromMeleeItem(item: MeleePF2e<ActorPF2e>): NPCStrike {
         (outcome: "success" | "criticalSuccess"): DamageRollFunction =>
         async (params: DamageRollParams = {}): Promise<Rolled<DamageRoll> | string | null> => {
             const domains = ["all", `${item.id}-damage`, "strike-damage", "damage-roll"];
+            const targetToken = params.target ?? game.user.targets.first() ?? null;
+
             const context = await actor.getRollContext({
                 item,
                 statistic: strike,
-                target: { token: game.user.targets.first() ?? null },
+                target: { token: targetToken },
                 viewOnly: params.getFormula ?? false,
                 domains,
-                options: new Set(params.options ?? []),
+                options: new Set([...baseOptions, ...(params.options ?? [])]),
             });
 
             if (!context.self.item.dealsDamage && !params.getFormula) {
@@ -437,7 +454,7 @@ function calculateRangePenalty(
     const modifier = new ModifierPF2e({
         label: "PF2E.RangePenalty",
         slug,
-        type: MODIFIER_TYPE.UNTYPED,
+        type: "untyped",
         modifier: Math.max((increment - 1) * -2, -12), // Max range penalty before automatic failure
         predicate: [{ nor: ["ignore-range-penalty", { gte: ["ignore-range-penalty", increment] }] }],
         adjustments: extractModifierAdjustments(actor.synthetics.modifierAdjustments, selectors, slug),
@@ -451,7 +468,7 @@ function isReallyPC(actor: ActorPF2e): boolean {
     if (!actor.isOfType("character")) return false;
     const classItemSourceID = actor.class?.sourceId;
     return !(
-        [ANIMAL_COMPANION_SOURCE_ID, CONSTRUCT_COMPANION_SOURCE_ID].includes(classItemSourceID ?? "") ||
+        [...ANIMAL_COMPANION_SOURCE_IDS, ...CONSTRUCT_COMPANION_SOURCE_IDS].includes(classItemSourceID ?? "") ||
         actor.traits.has("eidolon")
     );
 }
@@ -467,6 +484,7 @@ export {
     calculateRangePenalty,
     checkAreaEffects,
     getRangeIncrement,
+    isOffGuardFromFlanking,
     isReallyPC,
     migrateActorSource,
     resetActors,

@@ -7,14 +7,11 @@ import { PHYSICAL_ITEM_TYPES } from "@item/physical/values.ts";
 import { MigrationList, MigrationRunner } from "@module/migration/index.ts";
 import { SlugField } from "@system/schema-data-fields.ts";
 import { ErrorPF2e, isObject, pick, setHasElement, sluggify, tupleHasValue } from "@util";
-import type { ModelPropsFromSchema } from "types/foundry/common/data/fields.d.ts";
-import { ItemAlterationField, applyAlterations } from "../alter-item/index.ts";
+import { ItemAlteration } from "../item-alteration/alteration.ts";
 import { ChoiceSetSource } from "../choice-set/data.ts";
 import { ChoiceSetRuleElement } from "../choice-set/rule-element.ts";
 import { RuleElementOptions, RuleElementPF2e, RuleElementSource } from "../index.ts";
 import { GrantItemSchema } from "./schema.ts";
-
-const { fields } = foundry.data;
 
 class GrantItemRuleElement extends RuleElementPF2e<GrantItemSchema> {
     static override validActorTypes: ActorType[] = ["character", "npc", "familiar"];
@@ -31,8 +28,8 @@ class GrantItemRuleElement extends RuleElementPF2e<GrantItemSchema> {
     /** Actions taken when either the parent or child item are deleted */
     onDeleteActions: Partial<OnDeleteActions> | null;
 
-    constructor(data: GrantItemSource, item: ItemPF2e<ActorPF2e>, options?: RuleElementOptions) {
-        super(data, item, options);
+    constructor(data: GrantItemSource, options: RuleElementOptions) {
+        super(data, options);
 
         if (this.reevaluateOnUpdate) {
             this.replaceSelf = false;
@@ -55,12 +52,13 @@ class GrantItemRuleElement extends RuleElementPF2e<GrantItemSchema> {
             this.#trackItem(grantedItem);
         }
 
-        if (item.isOfType("physical")) {
+        if (this.item.isOfType("physical")) {
             this.failValidation("parent item must not be physical");
         }
     }
 
     static override defineSchema(): GrantItemSchema {
+        const { fields } = foundry.data;
         return {
             ...super.defineSchema(),
             uuid: new fields.StringField({ required: true, nullable: false, blank: false, initial: undefined }),
@@ -68,7 +66,7 @@ class GrantItemRuleElement extends RuleElementPF2e<GrantItemSchema> {
             reevaluateOnUpdate: new fields.BooleanField({ required: false, nullable: false, initial: false }),
             replaceSelf: new fields.BooleanField({ required: false, nullable: false, initial: false }),
             allowDuplicate: new fields.BooleanField({ required: false, nullable: false, initial: true }),
-            alterations: new fields.ArrayField(new ItemAlterationField(), {
+            alterations: new fields.ArrayField(new fields.EmbeddedDataField(ItemAlteration), {
                 required: false,
                 nullable: false,
                 initial: [],
@@ -79,8 +77,8 @@ class GrantItemRuleElement extends RuleElementPF2e<GrantItemSchema> {
 
     static ON_DELETE_ACTIONS = ["cascade", "detach", "restrict"] as const;
 
-    override _validateModel(data: SourceFromSchema<GrantItemSchema>): void {
-        super._validateModel(data);
+    static override validateJoint(data: SourceFromSchema<GrantItemSchema>): void {
+        super.validateJoint(data);
 
         if (data.track && !data.flag) {
             throw Error("must have explicit flag set if granted item is tracked");
@@ -165,12 +163,12 @@ class GrantItemRuleElement extends RuleElementPF2e<GrantItemSchema> {
 
         this.#applyChoiceSelections(tempGranted);
 
-        const alterations = this.alterations.map((a) => ({ ...a, value: this.resolveValue(a.value) }));
         try {
-            applyAlterations(grantedSource, alterations);
+            for (const alteration of this.alterations) {
+                alteration.applyTo(grantedSource);
+            }
         } catch (error) {
             if (error instanceof Error) this.failValidation(error.message);
-            return;
         }
 
         if (this.ignored) return;

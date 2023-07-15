@@ -124,7 +124,7 @@ function objectHasKey<O extends object>(obj: O, key: unknown): key is keyof O {
 }
 
 /** Check if a value is present in the provided array. Especially useful for checking against literal tuples */
-function tupleHasValue<A extends readonly unknown[]>(array: A, value: unknown): value is A[number] {
+function tupleHasValue<const A extends readonly unknown[]>(array: A, value: unknown): value is A[number] {
     return array.includes(value);
 }
 
@@ -141,16 +141,6 @@ function pick<T extends object, K extends keyof T>(obj: T, keys: Iterable<K>): P
         }
         return result;
     }, {} as Pick<T, K>);
-}
-
-/** Returns a subset of an object with explicitly excluded keys */
-function omit<T extends object, K extends keyof T>(obj: T, keys: Iterable<K>): Omit<T, K> {
-    const clone = deepClone(obj);
-    for (const key of keys) {
-        delete clone[key];
-    }
-
-    return clone;
 }
 
 let intlNumberFormat: Intl.NumberFormat;
@@ -241,11 +231,11 @@ function getActionTypeLabel(
 ): string | null {
     switch (type) {
         case "action":
-            return cost === 1 ? "PF2E.Action.Type.Single" : "PF2E.Action.Type.Activity";
+            return cost === 1 ? "PF2E.Item.Action.Type.Single" : "PF2E.Item.Action.Type.Activity";
         case "free":
-            return "PF2E.Action.Type.Free";
+            return "PF2E.Item.Action.Type.Free";
         case "reaction":
-            return "PF2E.Action.Type.Reaction";
+            return "PF2E.Item.Action.Type.Reaction";
         default:
             return null;
     }
@@ -295,7 +285,7 @@ const actionGlyphMap: Record<string, string> = {
  * Returns a character that can be used with the Pathfinder action font
  * to display an icon. If null it returns empty string.
  */
-function getActionGlyph(action: string | number | null | { type: string; value: string | number | null }): string {
+function getActionGlyph(action: string | number | null | ActionCost): string {
     if (!action && action !== 0) return "";
 
     const value = typeof action !== "object" ? action : action.type === "action" ? action.value : action.type;
@@ -481,7 +471,6 @@ export {
     localizer,
     mapValues,
     objectHasKey,
-    omit,
     ordinal,
     padArray,
     parseHTML,

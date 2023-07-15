@@ -1,21 +1,25 @@
 import {
     AbilityBasedStatistic,
+    ActorAttributes,
     ActorSystemData,
     ActorSystemSource,
-    ActorAttributes,
-    BaseActorSourcePF2e,
     ActorTraitsData,
     ActorTraitsSource,
-    HitPointsData,
-    Rollable,
+    BaseActorSourcePF2e,
+    HitPointsStatistic,
     StrikeData,
-    RollFunction,
 } from "@actor/data/base.ts";
 import { DamageDicePF2e, ModifierPF2e, RawModifier, StatisticModifier } from "@actor/modifiers.ts";
-import type { AbilityString, ActorAlliance, SaveType, SkillAbbreviation, SkillLongForm } from "@actor/types.ts";
+import type {
+    AbilityString,
+    ActorAlliance,
+    MovementType,
+    SaveType,
+    SkillAbbreviation,
+    SkillLongForm,
+} from "@actor/types.ts";
 import type { CREATURE_ACTOR_TYPES } from "@actor/values.ts";
 import { LabeledNumber, Size, ValueAndMax, ValuesList, ZeroToThree } from "@module/data.ts";
-import { RollParameters } from "@system/rolls.ts";
 import { Statistic, StatisticTraceData } from "@system/statistic/index.ts";
 import { CreatureSensePF2e, SenseAcuity, SenseType } from "./sense.ts";
 import { Alignment, CreatureTrait } from "./types.ts";
@@ -25,10 +29,8 @@ type BaseCreatureSource<TType extends CreatureType, TSystemSource extends Creatu
     TSystemSource
 >;
 
-/** Skill and Lore statistics for rolling. Both short and longform are supported, but eventually only long form will be */
-type CreatureSkills = Record<SkillAbbreviation, Statistic> &
-    Record<SkillLongForm, Statistic> &
-    Partial<Record<string, Statistic>>;
+/** Skill and Lore statistics for rolling. */
+type CreatureSkills = Record<SkillLongForm, Statistic> & Partial<Record<string, Statistic>>;
 
 interface CreatureSystemSource extends ActorSystemSource {
     details?: {
@@ -126,12 +128,7 @@ interface CreatureTraitsData extends ActorTraitsData<CreatureTrait>, Omit<Creatu
     languages: ValuesList<Language>;
 }
 
-type SkillData = StatisticModifier &
-    AbilityBasedStatistic &
-    Rollable & {
-        lore?: boolean;
-        visible?: boolean;
-    };
+type SkillData = StatisticTraceData & AbilityBasedStatistic;
 
 /** The full save data for a character; including its modifiers and other details */
 type SaveData = StatisticTraceData & AbilityBasedStatistic & { saveDetail?: string };
@@ -140,7 +137,7 @@ type CreatureSaves = Record<SaveType, SaveData>;
 
 /** Miscallenous but mechanically relevant creature attributes.  */
 interface CreatureAttributes extends ActorAttributes {
-    hp: CreatureHitPoints;
+    hp: HitPointsStatistic;
     ac: { value: number };
     hardness?: { value: number };
     perception: CreaturePerception;
@@ -168,10 +165,7 @@ interface CreatureAttributes extends ActorAttributes {
     emitsSound: boolean;
 }
 
-interface CreaturePerception extends StatisticModifier {
-    value: number;
-    roll?: RollFunction<RollParameters>;
-}
+type CreaturePerception = StatisticTraceData;
 
 interface CreatureSpeeds extends StatisticModifier {
     /** The actor's primary speed (usually walking/stride speed). */
@@ -182,16 +176,11 @@ interface CreatureSpeeds extends StatisticModifier {
     total: number;
 }
 
-type MovementType = "land" | "burrow" | "climb" | "fly" | "swim";
 interface LabeledSpeed extends Omit<LabeledNumber, "exceptions"> {
     type: MovementType;
     source?: string;
     total?: number;
     derivedFromLand?: boolean;
-}
-
-interface CreatureHitPoints extends HitPointsData {
-    negativeHealing: boolean;
 }
 
 /** Creature initiative statistic */
@@ -249,7 +238,6 @@ export {
     BaseCreatureSource,
     CreatureAttributes,
     CreatureDetails,
-    CreatureHitPoints,
     CreatureInitiativeSource,
     CreatureResources,
     CreatureResourcesSource,
@@ -264,7 +252,6 @@ export {
     HeldShieldData,
     LabeledSpeed,
     Language,
-    MovementType,
     SaveData,
     SenseData,
     SkillAbbreviation,

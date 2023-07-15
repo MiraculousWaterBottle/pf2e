@@ -13,6 +13,10 @@ class AncestryPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends 
         return new Set(this.system.traits.value);
     }
 
+    get rarity(): string {
+        return this.system.traits.rarity;
+    }
+
     get hitPoints(): number {
         return this.system.hp;
     }
@@ -31,6 +35,13 @@ class AncestryPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends 
             .filter((boost) => boost.value.length === 1)
             .map((boost) => boost.selected)
             .filter((boost): boost is AbilityString => !!boost);
+    }
+
+    /** Returns all flaws enforced by this ancestry normally */
+    get lockedFlaws(): AbilityString[] {
+        return Object.values(this.system.flaws)
+            .map((flaw) => flaw.selected)
+            .filter((flaw): flaw is AbilityString => !!flaw);
     }
 
     /** Include all ancestry features in addition to any with the expected location ID */
@@ -124,13 +135,22 @@ class AncestryPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends 
         actor.system.traits.value.push(...this.traits);
 
         const slug = this.slug ?? sluggify(this.name);
-        actor.system.details.ancestry = { name: this.name, trait: slug };
+        actor.system.details.ancestry = {
+            name: this.name,
+            trait: slug,
+            countsAs: [slug],
+        };
 
         // Set self: roll option for this ancestry and its associated traits
         actor.rollOptions.all[`self:ancestry:${slug}`] = true;
         for (const trait of this.traits) {
             actor.rollOptions.all[`self:trait:${trait}`] = true;
         }
+    }
+
+    /** Generate a list of strings for use in predication */
+    override getRollOptions(prefix = this.type): string[] {
+        return [...super.getRollOptions(prefix), `${prefix}:rarity:${this.rarity}`];
     }
 }
 

@@ -13,6 +13,7 @@ interface PartySystemSource extends ActorSystemSource {
     attributes: PartyAttributesSource;
     details: PartyDetailsSource;
     traits?: never;
+    campaign?: PartyCampaignSource;
 }
 
 interface PartyAttributesSource extends ActorAttributesSource {
@@ -33,7 +34,7 @@ interface PartyDetailsSource {
 }
 
 interface MemberData {
-    uuid: ActorUUID | TokenDocumentUUID;
+    uuid: ActorUUID;
 }
 
 interface PartySystemData extends Omit<PartySystemSource, "attributes">, Omit<ActorSystemData, "traits"> {
@@ -47,8 +48,11 @@ interface PartyAttributes
     immunities: never[];
     weaknesses: never[];
     resistances: never[];
+    speed: { value: number };
 }
 
 interface PartyDetails extends PartyDetailsSource, ActorDetails {}
 
-export { MemberData, PartySource, PartySystemData };
+type PartyCampaignSource = { type: string } & Record<string, unknown>;
+
+export { MemberData, PartyCampaignSource, PartySource, PartySystemData };

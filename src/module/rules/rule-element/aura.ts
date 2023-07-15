@@ -1,16 +1,12 @@
-import { ActorPF2e } from "@actor";
 import { AuraColors, AuraEffectData, SaveType } from "@actor/types.ts";
 import { SAVE_TYPES } from "@actor/values.ts";
-import { ItemPF2e } from "@item";
 import { EffectTrait } from "@item/abstract-effect/data.ts";
 import { PredicateField } from "@system/schema-data-fields.ts";
 import { sluggify } from "@util";
-import { UUIDUtils } from "@util/uuid-utils.ts";
 import type {
     ArrayField,
     BooleanField,
     ColorField,
-    ModelPropsFromSchema,
     SchemaField,
     StringField,
 } from "types/foundry/common/data/fields.d.ts";
@@ -19,8 +15,8 @@ import { RuleElementOptions, RuleElementPF2e, RuleElementSource } from "./index.
 
 /** A Pathfinder 2e aura, capable of transmitting effects and with a visual representation on the canvas */
 class AuraRuleElement extends RuleElementPF2e<AuraSchema> {
-    constructor(source: AuraRuleElementSource, item: ItemPF2e<ActorPF2e>, options?: RuleElementOptions) {
-        super(source, item, options);
+    constructor(source: AuraRuleElementSource, options: RuleElementOptions) {
+        super(source, options);
         this.slug ??= this.item.slug ?? sluggify(this.item.name);
         for (const effect of this.effects) {
             effect.includesSelf ??= effect.affects !== "enemies";
@@ -107,7 +103,7 @@ class AuraRuleElement extends RuleElementPF2e<AuraSchema> {
 
             // Late validation check of effect UUID
             for (const effect of data.effects) {
-                const indexEntry = UUIDUtils.fromUuidSync(effect.uuid);
+                const indexEntry = fromUuidSync(effect.uuid);
                 if (!(indexEntry && "type" in indexEntry && typeof indexEntry.type === "string")) {
                     this.failValidation(`Unable to resolve effect uuid: ${effect.uuid}`);
                     return;

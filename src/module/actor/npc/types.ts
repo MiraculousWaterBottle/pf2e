@@ -1,12 +1,13 @@
 import { CreatureSheetData } from "@actor/creature/types.ts";
-import { HitPointsData, PerceptionData } from "@actor/data/base.ts";
-import { SaveType, SkillAbbreviation } from "@actor/types.ts";
+import { HitPointsStatistic, PerceptionData } from "@actor/data/base.ts";
+import { MovementType, SaveType, SkillAbbreviation } from "@actor/types.ts";
 import { ActionItemPF2e, EffectPF2e, ItemPF2e } from "@item";
 import { SpellcastingSheetData } from "@item/spellcasting-entry/index.ts";
 import { ZeroToFour } from "@module/data.ts";
 import { TraitTagifyEntry } from "@module/sheet/helpers.ts";
+import { ArmorClassTraceData } from "@system/statistic/armor-class.ts";
+import { NPCAttributes, NPCSaveData, NPCSkillData, NPCSystemData } from "./data.ts";
 import { NPCPF2e, NPCStrike } from "./index.ts";
-import { NPCArmorClass, NPCAttributes, NPCSaveData, NPCSkillData, NPCSystemData } from "./data.ts";
 
 interface ActionsDetails {
     label: string;
@@ -43,8 +44,8 @@ type NPCSkillSheetData = NPCSkillData & WithAdjustments & WithRank;
 interface NPCSystemSheetData extends NPCSystemData {
     actions: NPCStrikeSheetData[];
     attributes: NPCAttributes & {
-        ac: NPCArmorClass & WithAdjustments;
-        hp: HitPointsData & WithAdjustments;
+        ac: ArmorClassTraceData & WithAdjustments;
+        hp: HitPointsStatistic & WithAdjustments;
         perception: PerceptionData & WithAdjustments & WithRank;
     };
     details: NPCSystemData["details"] & {
@@ -69,7 +70,7 @@ interface NPCSpellcastingSheetData extends SpellcastingSheetData {
 }
 
 /** Additional fields added in sheet data preparation */
-interface NPCSheetData<TActor extends NPCPF2e> extends CreatureSheetData<TActor> {
+interface NPCSheetData<TActor extends NPCPF2e = NPCPF2e> extends CreatureSheetData<TActor> {
     actions: NPCActionSheetData;
     data: NPCSystemSheetData;
     items: NPCSheetItemData<ItemPF2e<TActor>>[];
@@ -89,6 +90,15 @@ interface NPCSheetData<TActor extends NPCPF2e> extends CreatureSheetData<TActor>
     configLootableNpc?: boolean;
     traitTagifyData: TraitTagifyEntry[];
     languageDetails?: string;
+    speeds: Record<"land", NPCSpeedSheetData & { details: string }> &
+        Record<Exclude<MovementType, "land">, NPCSpeedSheetData | null>;
+}
+
+interface NPCSpeedSheetData {
+    value: number;
+    label: string;
+    adjustedHigher: boolean;
+    adjustedLower: boolean;
 }
 
 type NPCSheetItemData<TItem extends ItemPF2e<NPCPF2e>> = RawObject<TItem> & {
@@ -126,6 +136,7 @@ export {
     NPCSheetData,
     NPCSheetItemData,
     NPCSkillSheetData,
+    NPCSpeedSheetData,
     NPCSpellcastingSheetData,
     NPCStrikeSheetData,
     NPCSystemSheetData,

@@ -11,6 +11,7 @@ import { PERSISTENT_DAMAGE_IMAGES } from "@system/damage/values.ts";
 import { DegreeOfSuccess } from "@system/degree-of-success.ts";
 import { Statistic } from "@system/statistic/index.ts";
 import { ErrorPF2e } from "@util";
+import * as R from "remeda";
 import { ConditionSource, ConditionSystemData, PersistentDamageData } from "./data.ts";
 import { ConditionKey, ConditionSlug } from "./types.ts";
 
@@ -22,7 +23,14 @@ class ConditionPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends
             return { type: "formula", value: this.system.persistent.formula };
         }
 
-        return this.system.value.value ? { type: "counter", value: this.system.value.value } : null;
+        return this.system.value.value
+            ? {
+                  type: "counter",
+                  max: Infinity,
+                  label: null,
+                  value: this.system.value.value,
+              }
+            : null;
     }
 
     /** Retrieve this condition's origin from its granting effect, if any */
@@ -58,17 +66,46 @@ class ConditionPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends
         return this.slug in CONFIG.PF2E.statusEffects.conditions;
     }
 
+    /** Create a textual breakdown of what applied this condition */
+    get breakdown(): string | null {
+        if (!this.active) return null;
+
+        const granters = R.uniq(
+            R.compact(
+                this.actor?.conditions.bySlug(this.slug).map((condition) => {
+                    const { appliedBy } = condition;
+                    return !appliedBy?.isOfType("condition") || appliedBy?.active ? appliedBy : null;
+                }) ?? []
+            )
+        );
+
+        const list = granters
+            .map((p) => p.name)
+            .sort((a, b) => a.localeCompare(b, game.i18n.lang))
+            .join(", ");
+
+        return list ? game.i18n.format("PF2E.EffectPanel.AppliedBy", { "condition-list": list }) : null;
+    }
+
+    /**
+     * Whether this condition is in-memory rather than stored in an actor's `items` collection and cannot be updated or
+     * deleted
+     */
+    get readonly(): boolean {
+        return this.actor && this.id ? !this.actor.items.has(this.id) : false;
+    }
+
     /** Include damage type and possibly category for persistent-damage conditions */
     override getRollOptions(prefix = this.type): string[] {
         const options = super.getRollOptions(prefix);
         if (this.system.persistent) {
             const { damageType } = this.system.persistent;
-            options.push(`damage:type:${damageType}`);
+            options.push(`damage:type:${damageType}`, `${prefix}:damage:type:${damageType}`);
             const category = DamageCategorization.fromDamageType(damageType);
-            if (category) options.push(`damage:category:${category}`);
+            if (category) options.push(`damage:category:${category}`, `${prefix}:damage:category:${category}`);
         }
 
-        return options;
+        return options.sort();
     }
 
     override async increase(this: ConditionPF2e<ActorPF2e>): Promise<void> {
@@ -80,7 +117,7 @@ class ConditionPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends
     }
 
     async onEndTurn(options: { token?: TokenDocumentPF2e | null } = {}): Promise<void> {
-        const actor = this.actor;
+        const { actor } = this;
         const token = options?.token ?? actor?.token;
         if (!this.active || !actor) return;
 
@@ -88,7 +125,7 @@ class ConditionPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends
             const roll = await this.system.persistent.damage.clone().evaluate({ async: true });
             roll.toMessage(
                 {
-                    speaker: ChatMessagePF2e.getSpeaker({ actor: actor, token }),
+                    speaker: ChatMessagePF2e.getSpeaker({ actor, token }),
                     flavor: `<strong>${this.name}</strong>`,
                 },
                 { rollMode: "roll" }
@@ -103,13 +140,13 @@ class ConditionPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends
         if (this.system.persistent) {
             const { dc, damageType } = this.system.persistent;
             const result = await new Statistic(this.actor, {
-                slug: "recovery",
+                slug: "pd-recovery",
                 label: game.i18n.format("PF2E.Item.Condition.PersistentDamage.Chat.RecoverLabel", {
                     name: this.name,
                 }),
                 check: { type: "flat-check" },
                 domains: [],
-            }).roll({ dc: { value: dc }, skipDialog: true });
+            }).roll({ dc: { value: dc }, extraRollOptions: this.getRollOptions("item"), skipDialog: true });
 
             if ((result?.degreeOfSuccess ?? 0) >= DegreeOfSuccess.SUCCESS) {
                 this.actor.decreaseCondition(`persistent-damage-${damageType}`);
@@ -219,7 +256,7 @@ class ConditionPF2e<TParent extends ActorPF2e | null = ActorPF2e | null> extends
         changed: DeepPartial<this["_source"]>,
         options: ConditionModificationContext<TParent>,
         user: UserPF2e
-    ): Promise<void> {
+    ): Promise<boolean | void> {
         options.conditionValue = this.value;
         return super._preUpdate(changed, options, user);
     }
@@ -263,4 +300,4 @@ interface ConditionModificationContext<TParent extends ActorPF2e | null> extends
     conditionValue?: number | null;
 }
 
-export { ConditionPF2e, ConditionModificationContext, PersistentDamagePF2e };
+export { ConditionModificationContext, ConditionPF2e, PersistentDamagePF2e };

@@ -1,3 +1,4 @@
+import { PartyPF2e } from "@actor";
 import { resetActors } from "@actor/helpers.ts";
 import { MigrationSummary } from "@module/apps/migration-summary.ts";
 import { SceneDarknessAdjuster } from "@module/apps/scene-darkness-adjuster.ts";
@@ -8,6 +9,7 @@ import { SetGamePF2e } from "@scripts/set-game-pf2e.ts";
 import { activateSocketListener } from "@scripts/socket.ts";
 import { storeInitialWorldVersions } from "@scripts/store-versions.ts";
 import { extendDragData } from "@scripts/system/dragstart-handler.ts";
+import * as R from "remeda";
 
 export const Ready = {
     listen: (): void => {
@@ -21,8 +23,8 @@ export const Ready = {
 
             // Save the current world schema version if hasn't before.
             storeInitialWorldVersions().then(async () => {
-                // User#isGM is inclusive of both gamemasters and assistant gamemasters, so check for the specific role
-                if (!game.user.hasRole(CONST.USER_ROLES.GAMEMASTER)) return;
+                // Ensure only a single GM will run migrations if multiple are logged in
+                if (game.user !== game.users.activeGM) return;
 
                 // Perform migrations, if any
                 const migrationRunner = new MigrationRunner(MigrationList.constructFromVersion(currentVersion));
@@ -109,17 +111,21 @@ export const Ready = {
                     .localeCompare(game.i18n.localize(CONFIG.Item.typeLabels[typeB] ?? ""));
             });
 
-            game.pf2e.system.moduleArt.refresh();
+            game.pf2e.system.moduleArt.refresh().then(() => {
+                ui.compendium.compileSearchIndex();
+            });
 
-            // Now that all game data is available, reprepare actor data among those actors currently in an encounter
-            const participants = game.combats.contents.flatMap((e) => e.combatants.contents);
-            const fightyActors = new Set(participants.flatMap((c) => c.actor ?? []));
-            resetActors(fightyActors);
-
-            // Prepare familiars now that all actors are initialized
-            for (const familiar of game.actors.filter((a) => a.type === "familiar")) {
-                familiar.reset();
-            }
+            // Now that all game data is available, Determine what actors we need to reprepare.
+            // Add actors currently in an encounter, a party, and all familiars (last)
+            const actorsToReprepare = R.compact([
+                ...game.combats.contents.flatMap((e) => e.combatants.contents).map((c) => c.actor),
+                ...game.actors
+                    .filter((a): a is PartyPF2e<null> => a.isOfType("party"))
+                    .flatMap((p) => p.members)
+                    .filter((a) => !a.isOfType("familiar")),
+                ...game.actors.filter((a) => a.type === "familiar"),
+            ]);
+            resetActors(new Set(actorsToReprepare));
 
             // Announce the system is ready in case any module needs access to an application not available until now
             Hooks.callAll("pf2e.systemReady");

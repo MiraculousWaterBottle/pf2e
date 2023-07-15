@@ -5,7 +5,7 @@ import { ActionDefaultOptions } from "@system/action-macros/index.ts";
 import { ErrorPF2e, localizer } from "@util";
 
 /** Effect: Raise a Shield */
-const ITEM_UUID = "Compendium.pf2e.equipment-effects.2YgXoHvJfrDHucMr";
+const ITEM_UUID = "Compendium.pf2e.equipment-effects.Item.2YgXoHvJfrDHucMr";
 
 const TEMPLATES = {
     flavor: "./systems/pf2e/templates/chat/action/flavor.hbs",
@@ -34,7 +34,10 @@ export async function raiseAShield(options: ActionDefaultOptions): Promise<void>
             return false;
         }
 
-        if (shield?.isBroken === false) {
+        if (shield?.isDestroyed) {
+            ui.notifications.warn(localize("ShieldIsDestroyed", { actor: speaker.alias, shield: shield.name }));
+            return false;
+        } else if (shield?.isBroken === false) {
             const effect = await fromUuid(ITEM_UUID);
             if (!(effect instanceof EffectPF2e)) {
                 throw ErrorPF2e("Raise a Shield effect not found");

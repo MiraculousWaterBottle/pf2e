@@ -1,11 +1,11 @@
 import { ActorPF2e, CharacterPF2e } from "@actor";
 import { StrikeData, TraitViewData } from "@actor/data/base.ts";
-import { CheckModifier, StatisticModifier } from "@actor/modifiers.ts";
+import { CheckModifier } from "@actor/modifiers.ts";
 import { RollTarget } from "@actor/types.ts";
 import { WeaponPF2e } from "@item";
-import { ChatMessagePF2e } from "@module/chat-message/index.ts";
 import { ChatMessageSourcePF2e, CheckRollContextFlag, TargetFlag } from "@module/chat-message/data.ts";
 import { isCheckContextFlag } from "@module/chat-message/helpers.ts";
+import { ChatMessagePF2e } from "@module/chat-message/index.ts";
 import { RollNotePF2e } from "@module/notes.ts";
 import { ScenePF2e, TokenDocumentPF2e } from "@scene";
 import { eventToRollParams } from "@scripts/sheet-util.ts";
@@ -13,13 +13,15 @@ import { StatisticDifficultyClass } from "@system/statistic/index.ts";
 import {
     ErrorPF2e,
     fontAwesomeIcon,
+    htmlQuery,
+    htmlQueryAll,
     objectHasKey,
-    omit,
     parseHTML,
     signedInteger,
     sluggify,
     traitSlugToObject,
 } from "@util";
+import * as R from "remeda";
 import {
     DEGREE_OF_SUCCESS_STRINGS,
     DegreeAdjustmentsRecord,
@@ -73,7 +75,8 @@ class CheckPF2e {
             check.calculateTotal(rollOptions);
         }
 
-        if (!context.skipDialog) {
+        // Show dialog for adding/editing modifiers, unless skipped or flat check
+        if (!context.skipDialog && context.type !== "flat-check") {
             const dialogClosed = new Promise((resolve: (value: boolean) => void) => {
                 new CheckModifiersDialog(check, resolve, context).render(true);
             });
@@ -230,7 +233,7 @@ class CheckPF2e {
             type: context.type ?? "check",
             traits: context.traits ?? [],
             substitutions,
-            dc: context.dc ? omit(context.dc, ["statistic"]) : null,
+            dc: context.dc ? R.omit(context.dc, ["statistic"]) : null,
             skipDialog: context.skipDialog ?? !game.user.settings.showRollDialogs,
             isReroll: context.isReroll ?? false,
             outcome: context.outcome ?? null,
@@ -240,7 +243,6 @@ class CheckPF2e {
 
         type MessagePromise = Promise<ChatMessagePF2e | ChatMessageSourcePF2e>;
         const message = await ((): MessagePromise => {
-            const origin = item && { uuid: item.uuid, type: item.type };
             const coreFlags: Record<string, unknown> = { canPopout: true };
             if (context.type === "initiative") coreFlags.initiativeRoll = true;
             const flags = {
@@ -250,7 +252,7 @@ class CheckPF2e {
                     unsafe: flavor,
                     modifierName: check.slug,
                     modifiers: check.modifiers.map((m) => m.toObject()),
-                    origin,
+                    origin: item?.getOriginData(),
                     strike,
                 },
             };
@@ -441,11 +443,31 @@ class CheckPF2e {
 
         const newFlavor = useNewRoll
             ? await (async (): Promise<string> => {
-                  const $parsedFlavor = $("<div>").append(oldFlavor);
+                  const parsedFlavor = document.createElement("div");
+                  parsedFlavor.innerHTML = oldFlavor;
                   const target = context.target ?? null;
-                  const flavor = await this.createResultFlavor({ degree, target });
-                  if (flavor) $parsedFlavor.find(".target-dc-result").replaceWith(flavor);
-                  return $parsedFlavor.html();
+                  const targetFlavor = await this.createResultFlavor({ degree, target });
+                  if (targetFlavor) {
+                      htmlQuery(parsedFlavor, ".target-dc-result")?.replaceWith(targetFlavor);
+                  }
+                  for (const element of htmlQueryAll(parsedFlavor, ".roll-note")) {
+                      element.remove();
+                  }
+                  const notes = context.notes?.map((n) => new RollNotePF2e(n)) ?? [];
+                  const notesText =
+                      notes
+                          .filter((note) => {
+                              if (!context.dc || note.outcome.length === 0) {
+                                  // Always show the note if the check has no DC or no outcome is specified.
+                                  return true;
+                              }
+                              const outcome = context.outcome ?? context.unadjustedOutcome;
+                              return !!(outcome && note.outcome.includes(outcome));
+                          })
+                          .map((n) => n.text)
+                          .join("\n") ?? "";
+
+                  return parsedFlavor.innerHTML + notesText;
               })()
             : oldFlavor;
 
@@ -540,16 +562,18 @@ class CheckPF2e {
 
         // DC, circumstance adjustments, and the target's name
         const dcData = ((): ResultFlavorTemplateData["dc"] => {
+            const dcSlug =
+                dc.slug ?? (dc.statistic instanceof StatisticDifficultyClass ? dc.statistic.parent.slug : null);
             const dcType = game.i18n.localize(
                 dc.label?.trim() ||
                     game.i18n.localize(
-                        objectHasKey(checkDCs.Specific, dc.slug) ? checkDCs.Specific[dc.slug] : checkDCs.Unspecific
+                        objectHasKey(checkDCs.Specific, dcSlug) ? checkDCs.Specific[dcSlug] : checkDCs.Unspecific
                     )
             );
 
             // Get any circumstance penalties or bonuses to the target's DC
             const circumstances =
-                dc.statistic instanceof StatisticModifier || dc.statistic instanceof StatisticDifficultyClass
+                dc.statistic instanceof StatisticDifficultyClass
                     ? dc.statistic.modifiers.filter((m) => m.enabled && m.type === "circumstance")
                     : [];
             const preadjustedDC =

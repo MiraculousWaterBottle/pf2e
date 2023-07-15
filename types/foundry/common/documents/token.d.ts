@@ -1,6 +1,6 @@
 import type { Document, DocumentMetadata } from "../abstract/module.d.ts";
 import type { ActorSource } from "./actor.d.ts";
-import type { BaseScene, BaseUser } from "./module.d.ts";
+import type { BaseActorDelta, BaseScene, BaseUser } from "./module.d.ts";
 
 /**
  * The Token document model.
@@ -8,6 +8,8 @@ import type { BaseScene, BaseUser } from "./module.d.ts";
  * @property data The constructed data object for the document.
  */
 export default class BaseToken<TParent extends BaseScene | null = BaseScene | null> extends Document<TParent> {
+    name: string;
+
     readonly actorLink: boolean;
 
     displayName: TokenDisplayMode;
@@ -20,6 +22,10 @@ export default class BaseToken<TParent extends BaseScene | null = BaseScene | nu
 
     alpha: number;
 
+    actorId: string | null;
+
+    delta: BaseActorDelta<this> | null;
+
     texture: {
         src: VideoFilePath;
         scaleX: number;
@@ -27,14 +33,14 @@ export default class BaseToken<TParent extends BaseScene | null = BaseScene | nu
         offsetX: number;
         offsetY: number;
         rotation: number | null;
-        tint: HexColorString;
+        tint: HexColorString | undefined;
     };
 
     light: foundry.data.LightData;
 
     sight: {
         enabled: boolean;
-        range: number | null;
+        range: number;
         angle: number;
         color: HexColorString;
         attenuation: number;
@@ -47,6 +53,8 @@ export default class BaseToken<TParent extends BaseScene | null = BaseScene | nu
     elevation: number;
 
     effects: VideoFilePath[];
+
+    hidden: boolean;
 
     flags: DocumentFlags;
 
@@ -109,7 +117,7 @@ export interface TokenSource extends TokenLightData {
 
     actorId: string | null;
     actorLink: boolean;
-    actorData: DeepPartial<ActorSource>;
+    delta: DeepPartial<ActorSource> | null;
     mirrorX: boolean;
     mirrorY: boolean;
     height: number;
@@ -119,7 +127,7 @@ export interface TokenSource extends TokenLightData {
     elevation: number;
     lockRotation: boolean;
     effects: VideoFilePath[];
-    overlayEffect: string | null;
+    overlayEffect: string | undefined;
     alpha: number;
     vision: boolean;
     dimSight: number;

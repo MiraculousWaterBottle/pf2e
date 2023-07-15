@@ -45,8 +45,18 @@ class VisionDetectionMode extends DetectionModeBasicSight {
     protected override _canDetect(visionSource: VisionSource<TokenPF2e>, target: PlaceableObject): boolean {
         if (!super._canDetect(visionSource, target)) return false;
         const targetIsUndetected =
-            target instanceof TokenPF2e && !!target.actor?.hasCondition("undetected", "unnoticed");
+            target instanceof TokenPF2e && !!target.actor?.hasCondition("hidden", "undetected", "unnoticed");
         return !targetIsUndetected;
+    }
+
+    /** Potentially short-circuit range test */
+    protected override _testRange(
+        visionSource: VisionSource<Token<TokenDocument<Scene | null>>>,
+        mode: TokenDetectionMode,
+        target: PlaceableObject<CanvasDocument>,
+        test: CanvasVisibilityTest
+    ): boolean {
+        return mode.range >= canvas.dimensions!.maxR || super._testRange(visionSource, mode, target, test);
     }
 }
 
@@ -111,10 +121,20 @@ class HearingDetectionMode extends DetectionMode {
     ): boolean {
         test.loh ??= new Map();
         const hearingSource = visionSource.object.hearing;
-        const hasLOH = test.loh.get(hearingSource) ?? hearingSource.los.contains(test.point.x, test.point.y);
+        const hasLOH = test.loh.get(hearingSource) ?? hearingSource.shape.contains(test.point.x, test.point.y);
         test.loh.set(hearingSource, hasLOH);
 
         return hasLOH;
+    }
+
+    /** Potentially short-circuit range test */
+    protected override _testRange(
+        visionSource: VisionSource<Token<TokenDocument<Scene | null>>>,
+        mode: TokenDetectionMode,
+        target: PlaceableObject<CanvasDocument>,
+        test: CanvasVisibilityTest
+    ): boolean {
+        return mode.range >= canvas.dimensions!.maxR || super._testRange(visionSource, mode, target, test);
     }
 }
 

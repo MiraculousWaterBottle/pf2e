@@ -1,49 +1,102 @@
-import { RuleElementPF2e, RuleElementData, RuleElementOptions } from "../index.ts";
-import {
-    BattleFormAC,
-    BattleFormOverrides,
-    BattleFormSource,
-    BattleFormStrike,
-    BattleFormStrikeQuery,
-} from "./types.ts";
+import { CharacterPF2e } from "@actor";
+import { CharacterStrike } from "@actor/character/data.ts";
+import { CharacterSkill } from "@actor/character/types.ts";
+import { SENSE_ACUITIES, SENSE_TYPES } from "@actor/creature/sense.ts";
+import { ActorType } from "@actor/data/index.ts";
+import { ActorInitiative } from "@actor/initiative.ts";
+import { DiceModifierPF2e, ModifierPF2e, StatisticModifier } from "@actor/modifiers.ts";
+import { MOVEMENT_TYPES, SKILL_ABBREVIATIONS, SKILL_DICTIONARY } from "@actor/values.ts";
+import { WeaponPF2e } from "@item";
+import { RollNotePF2e } from "@module/notes.ts";
+import { PredicatePF2e } from "@system/predication.ts";
+import { ErrorPF2e, isObject, setHasElement, sluggify, tupleHasValue } from "@util";
 import { CreatureSizeRuleElement } from "../creature-size.ts";
+import { ResolvableValueField, RuleElementSource } from "../data.ts";
+import { RuleElementOptions, RuleElementPF2e } from "../index.ts";
 import { ImmunityRuleElement } from "../iwr/immunity.ts";
 import { ResistanceRuleElement } from "../iwr/resistance.ts";
 import { WeaknessRuleElement } from "../iwr/weakness.ts";
 import { SenseRuleElement } from "../sense.ts";
 import { StrikeRuleElement } from "../strike.ts";
 import { TempHPRuleElement } from "../temp-hp.ts";
-import { ActorPF2e, CharacterPF2e } from "@actor";
-import { SENSE_TYPES } from "@actor/creature/sense.ts";
-import { ActorType } from "@actor/data/index.ts";
-import { MOVEMENT_TYPES, SKILL_ABBREVIATIONS, SKILL_DICTIONARY } from "@actor/values.ts";
-import { ItemPF2e, WeaponPF2e } from "@item";
-import { DiceModifierPF2e, ModifierPF2e, StatisticModifier } from "@actor/modifiers.ts";
-import { RollNotePF2e } from "@module/notes.ts";
-import { PredicatePF2e } from "@system/predication.ts";
-import { ErrorPF2e, isObject, setHasElement, sluggify, tupleHasValue } from "@util";
-import { RuleElementSource } from "../data.ts";
-import { CharacterStrike } from "@actor/character/data/index.ts";
+import { BattleFormSource, BattleFormStrike, BattleFormStrikeQuery } from "./types.ts";
+import { BattleFormRuleOverrideSchema, BattleFormRuleSchema } from "./schema.ts";
+import { RecordField } from "@system/schema-data-fields.ts";
 
-export class BattleFormRuleElement extends RuleElementPF2e {
-    overrides: this["data"]["overrides"];
-
+class BattleFormRuleElement extends RuleElementPF2e<BattleFormRuleSchema> {
     /** The label given to modifiers of AC, skills, and strikes */
     modifierLabel: string;
 
-    /** Whether the actor uses its own unarmed attacks while in battle form */
-    ownUnarmed: boolean;
-
     protected static override validActorTypes: ActorType[] = ["character"];
 
-    constructor(data: BattleFormSource, item: ItemPF2e<ActorPF2e>, options?: RuleElementOptions) {
-        data.value ??= {};
-        data.overrides ??= {};
-        super(data, item, options);
-        this.initialize(this.data);
-        this.overrides = this.resolveValue(this.data.value, this.data.overrides) as this["data"]["overrides"];
-        this.modifierLabel = this.label.replace(/^[^:]+:\s*|\s*\([^)]+\)$/g, "");
-        this.ownUnarmed = this.data.ownUnarmed;
+    static override defineSchema(): BattleFormRuleSchema {
+        const { fields } = foundry.data;
+        return {
+            ...super.defineSchema(),
+            value: new ResolvableValueField({ required: false, initial: undefined }),
+            overrides: new fields.SchemaField(
+                {
+                    traits: new fields.ArrayField(new fields.StringField()),
+                    armorClass: new fields.SchemaField(
+                        {
+                            modifier: new ResolvableValueField({
+                                required: false,
+                                nullable: false,
+                                initial: 0,
+                            }),
+                            ignoreCheckPenalty: new fields.BooleanField({
+                                required: false,
+                                nullable: false,
+                                initial: true,
+                            }),
+                            ignoreSpeedPenalty: new fields.BooleanField({
+                                required: false,
+                                nullable: false,
+                                initial: true,
+                            }),
+                        },
+                        { required: false, initial: undefined }
+                    ),
+                    tempHP: new ResolvableValueField({ required: false, nullable: true, initial: null }),
+                    senses: new RecordField(
+                        new fields.StringField({ required: true, blank: false, choices: [...SENSE_TYPES] }),
+                        new fields.SchemaField({
+                            acuity: new fields.StringField({
+                                choices: SENSE_ACUITIES,
+                                required: false,
+                                blank: false,
+                                initial: undefined,
+                            }),
+                            range: new fields.NumberField({ required: false, nullable: true, initial: undefined }),
+                        }),
+                        { required: false, initial: undefined }
+                    ),
+                    size: new fields.StringField({ required: false, blank: false, initial: undefined }),
+                    speeds: new fields.ObjectField({ required: false, initial: undefined }),
+                    skills: new fields.ObjectField({ required: false, initial: undefined }),
+                    strikes: new fields.ObjectField({ required: false }),
+                    immunities: new fields.ArrayField(new fields.ObjectField()),
+                    weaknesses: new fields.ArrayField(new fields.ObjectField()),
+                    resistances: new fields.ArrayField(new fields.ObjectField()),
+                },
+                { required: true, nullable: false }
+            ),
+            ownUnarmed: new fields.BooleanField({ required: false, nullable: false, initial: false }),
+            canCast: new fields.BooleanField({ required: false, nullable: false, initial: false }),
+            canSpeak: new fields.BooleanField({ required: false, nullable: false, initial: false }),
+            hasHands: new fields.BooleanField({ required: false, nullable: false, initial: false }),
+        };
+    }
+
+    constructor(data: BattleFormSource, options: RuleElementOptions) {
+        super(data, options);
+
+        this.overrides = this.resolveValue(
+            this.value,
+            this.overrides
+        ) as ModelPropsFromSchema<BattleFormRuleOverrideSchema>;
+
+        this.modifierLabel = this.getReducedLabel();
     }
 
     static defaultIcons: Record<string, ImageFilePath | undefined> = [
@@ -86,49 +139,6 @@ export class BattleFormRuleElement extends RuleElementPF2e {
         return { ...accumulated, [strike]: path };
     }, {});
 
-    /** Fill in base override data */
-    private initialize(data: BattleFormSource): void {
-        if (this.ignored) return;
-
-        const { value } = data;
-        const dataIsValid = data.overrides instanceof Object && (value instanceof Object || value === undefined);
-        if (!dataIsValid) {
-            return this.failValidation("Battle Form rule element failed to validate");
-        }
-
-        data.canCast ??= false;
-        data.canSpeak ??= false;
-        data.hasHands ??= false;
-        data.ownUnarmed ??= false;
-
-        const overrides = (data.overrides ??= {});
-        overrides.tempHP ??= null;
-        overrides.traits ??= [];
-        overrides.senses ??= {};
-        overrides.size ??= null;
-        overrides.speeds ??= {};
-        overrides.armorClass = mergeObject(
-            { modifier: 0, ignoreCheckPenalty: true, ignoreSpeedPenalty: true },
-            overrides.armorClass ?? {}
-        );
-
-        const skills = (overrides.skills ??= {});
-        for (const skillData of Object.values(skills)) {
-            skillData.ownIfHigher ??= true;
-        }
-
-        const strikes = (overrides.strikes ??= {});
-        for (const [key, strikeData] of Object.entries(strikes)) {
-            strikeData.label = game.i18n.localize(strikeData.label);
-            strikeData.img ??= BattleFormRuleElement.defaultIcons[key] ?? this.item.img;
-            strikeData.ownIfHigher ??= true;
-        }
-
-        overrides.immunities ??= [];
-        overrides.weaknesses ??= [];
-        overrides.resistances ??= [];
-    }
-
     override async preCreate({ itemSource, ruleSource }: RuleElementPF2e.PreCreateParams): Promise<void> {
         if (!this.test()) {
             ruleSource.ignored = true;
@@ -154,7 +164,7 @@ export class BattleFormRuleElement extends RuleElementPF2e {
 
         const tempHP = this.overrides.tempHP;
         if (tempHP) {
-            new TempHPRuleElement({ key: "TempHP", label: this.label, value: tempHP }, this.item).onCreate(
+            new TempHPRuleElement({ key: "TempHP", label: this.label, value: tempHP }, { parent: this.item }).onCreate(
                 actorUpdates
             );
         }
@@ -181,7 +191,7 @@ export class BattleFormRuleElement extends RuleElementPF2e {
             if (!currentTraits.value.includes(trait)) currentTraits.value.push(trait);
         }
 
-        if (this.overrides.armorClass.ignoreSpeedPenalty) {
+        if (this.overrides.armorClass?.ignoreSpeedPenalty) {
             const speedRollOptions = (actor.rollOptions.speed ??= {});
             speedRollOptions["armor:ignore-speed-penalty"] = true;
         }
@@ -196,6 +206,10 @@ export class BattleFormRuleElement extends RuleElementPF2e {
         this.#prepareSpeeds();
         this.#prepareStrikes();
         this.#prepareIWR();
+
+        // Initiative is built from skills/perception, so re-initialize just in case
+        this.actor.initiative = new ActorInitiative(this.actor);
+        this.actor.system.attributes.initiative = this.actor.initiative.getTraceData();
     }
 
     /** Remove temporary hit points */
@@ -204,7 +218,7 @@ export class BattleFormRuleElement extends RuleElementPF2e {
 
         const tempHP = this.overrides.tempHP;
         if (tempHP) {
-            new TempHPRuleElement({ key: "TempHP", label: this.label, value: tempHP }, this.item).onDelete(
+            new TempHPRuleElement({ key: "TempHP", label: this.label, value: tempHP }, { parent: this.item }).onDelete(
                 actorUpdates
             );
         }
@@ -214,17 +228,22 @@ export class BattleFormRuleElement extends RuleElementPF2e {
         const { attributes, rollOptions } = this.actor;
         rollOptions.all["polymorph"] = true;
         rollOptions.all["battle-form"] = true;
-        rollOptions.all["armor:ignore-check-penalty"] = this.overrides.armorClass.ignoreCheckPenalty;
-        rollOptions.all["armor:ignore-speed-penalty"] = this.overrides.armorClass.ignoreSpeedPenalty;
-        if (this.overrides.armorClass.ignoreSpeedPenalty) {
-            const speedRollOptions = (rollOptions.speed ??= {});
-            speedRollOptions["armor:ignore-speed-penalty"] = true;
+        if (this.overrides.armorClass) {
+            rollOptions.all["armor:ignore-check-penalty"] = this.overrides.armorClass.ignoreCheckPenalty;
+            rollOptions.all["armor:ignore-speed-penalty"] = this.overrides.armorClass.ignoreSpeedPenalty;
+            if (this.overrides.armorClass.ignoreSpeedPenalty) {
+                const speedRollOptions = (rollOptions.speed ??= {});
+                speedRollOptions["armor:ignore-speed-penalty"] = true;
+            }
         }
-        // Inform predicates that this battle form grants a skill modifier
-        for (const key of SKILL_ABBREVIATIONS) {
-            if (!(key in this.overrides.skills)) continue;
-            const longForm = SKILL_DICTIONARY[key];
-            rollOptions.all[`battle-form:${longForm}`] = true;
+
+        if (this.overrides.skills) {
+            // Inform predicates that this battle form grants a skill modifier
+            for (const key of SKILL_ABBREVIATIONS) {
+                if (!(key in this.overrides.skills)) continue;
+                const longForm = SKILL_DICTIONARY[key];
+                rollOptions.all[`battle-form:${longForm}`] = true;
+            }
         }
 
         // Reestablish hands free
@@ -248,24 +267,25 @@ export class BattleFormRuleElement extends RuleElementPF2e {
     /** Override the character's AC and ignore speed penalties if necessary */
     #prepareAC(): void {
         const overrides = this.overrides;
-        const armorClass = this.actor.system.attributes.ac;
-        const acOverride = Number(this.resolveValue(overrides.armorClass.modifier, armorClass.totalModifier)) || 0;
+        const { actor } = this;
+        const { armorClass } = actor;
+        const acOverride = Number(this.resolveValue(overrides.armorClass?.modifier, armorClass.value)) || 0;
         if (!acOverride) return;
 
         this.#suppressModifiers(armorClass);
-        const newModifier = Number(this.resolveValue(overrides.armorClass.modifier)) || 0;
-        armorClass.unshift(new ModifierPF2e(this.modifierLabel, newModifier, "untyped"));
-        armorClass.value = armorClass.totalModifier;
+        const newModifier = (Number(this.resolveValue(overrides.armorClass?.modifier)) || 0) - 10;
+        armorClass.modifiers.push(new ModifierPF2e(this.modifierLabel, newModifier, "untyped"));
+        this.actor.system.attributes.ac = armorClass.parent.getTraceData();
     }
 
     /** Add new senses the character doesn't already have */
     #prepareSenses(): void {
         for (const senseType of SENSE_TYPES) {
-            const newSense = this.overrides.senses[senseType];
+            const newSense = this.overrides.senses?.[senseType];
             if (!newSense) continue;
             newSense.acuity ??= "precise";
             const ruleData = { key: "Sense", selector: senseType, force: true, ...newSense };
-            new SenseRuleElement(ruleData, this.item).beforePrepareData();
+            new SenseRuleElement(ruleData, { parent: this.item }).beforePrepareData();
         }
     }
 
@@ -273,7 +293,7 @@ export class BattleFormRuleElement extends RuleElementPF2e {
     #prepareSize(): void {
         if (!this.overrides.size) return;
         const ruleData = { key: "CreatureSize", label: this.label, value: this.overrides.size };
-        new CreatureSizeRuleElement(ruleData, this.item).beforePrepareData();
+        new CreatureSizeRuleElement(ruleData, { parent: this.item }).beforePrepareData();
     }
 
     /** Add, replace and/or adjust non-land speeds */
@@ -282,92 +302,71 @@ export class BattleFormRuleElement extends RuleElementPF2e {
         const currentSpeeds = attributes.speed;
 
         for (const movementType of MOVEMENT_TYPES) {
-            const speedOverride = this.overrides.speeds[movementType];
+            const speedOverride = this.overrides.speeds?.[movementType];
             if (typeof speedOverride !== "number") continue;
 
             if (movementType === "land") {
-                const landSpeed = attributes.speed;
                 this.#suppressModifiers(attributes.speed);
-                attributes.speed.totalModifier = landSpeed.total = speedOverride + landSpeed.totalModifier;
-                const label = game.i18n.format("PF2E.SpeedBaseLabel", {
-                    type: game.i18n.localize("PF2E.SpeedTypesLand"),
-                });
-                attributes.speed.breakdown = [`${label} ${speedOverride}`]
-                    .concat(
-                        landSpeed.modifiers
-                            .filter((m) => m.enabled)
-                            .map((modifier) => {
-                                const speedName = game.i18n.localize(modifier.slug);
-                                const sign = modifier.modifier < 0 ? "" : "+";
-                                const value = modifier.modifier;
-                                return `${speedName} ${sign}${value}`;
-                            })
-                    )
-                    .join(", ");
+                attributes.speed.value = speedOverride;
             } else {
                 const { otherSpeeds } = currentSpeeds;
                 const label = game.i18n.localize(CONFIG.PF2E.speedTypes[movementType]);
-                otherSpeeds.findSplice((speed) => speed.type === movementType);
-                otherSpeeds.push({
-                    type: movementType,
-                    label,
-                    value: speedOverride,
-                });
+                otherSpeeds.findSplice((s) => s.type === movementType);
+                otherSpeeds.push({ type: movementType, label, value: speedOverride });
                 const newSpeed = this.actor.prepareSpeed(movementType);
                 if (!newSpeed) throw ErrorPF2e("Unexpected failure retrieving movement type");
                 this.#suppressModifiers(newSpeed);
-                newSpeed.totalModifier = newSpeed.total = speedOverride + newSpeed.totalModifier;
-                newSpeed.breakdown = [`${label} ${speedOverride}`]
-                    .concat(
-                        newSpeed.modifiers
-                            .filter((modifier) => modifier.enabled)
-                            .map((modifier) => {
-                                const sign = modifier.modifier < 0 ? "" : "+";
-                                const value = modifier.modifier;
-                                return `${this.modifierLabel} ${sign}${value}`;
-                            })
-                    )
-                    .join(", ");
 
-                otherSpeeds.findSplice((speed) => speed.type === movementType);
+                otherSpeeds.findSplice((s) => s.type === movementType);
                 otherSpeeds.push(newSpeed);
             }
         }
     }
 
     #prepareSkills(): void {
-        for (const [key, newSkill] of Object.entries(this.overrides.skills)) {
-            if (!setHasElement(SKILL_ABBREVIATIONS, key)) {
-                return this.failValidation(`Unrecognized skill abbreviation: ${key}`);
+        for (const [skillShort, newSkill] of Object.entries(this.overrides.skills ?? {})) {
+            if (!setHasElement(SKILL_ABBREVIATIONS, skillShort)) {
+                return this.failValidation(`Unrecognized skill abbreviation: ${skillShort}`);
             }
             newSkill.ownIfHigher ??= true;
 
-            const currentSkill = this.actor.system.skills[key];
+            const key = SKILL_DICTIONARY[skillShort];
+            const currentSkill = this.actor.skills[key];
             const newModifier = Number(this.resolveValue(newSkill.modifier)) || 0;
-            if (currentSkill.totalModifier > newModifier && newSkill.ownIfHigher) {
+            if (currentSkill.mod > newModifier && newSkill.ownIfHigher) {
                 continue;
             }
 
-            this.#suppressModifiers(currentSkill);
-            currentSkill.unshift(new ModifierPF2e(this.modifierLabel, newModifier, "untyped"));
-            currentSkill.value = currentSkill.totalModifier;
-        }
+            const baseMod = new ModifierPF2e({
+                label: this.modifierLabel,
+                slug: "battle-form",
+                modifier: newModifier,
+                type: "untyped",
+            });
 
-        // Clear skills cache to refresh total modifiers, breakdowns, etc.
-        if (Object.keys(this.overrides.skills).length > 0) {
-            this.actor._skills = null;
+            this.actor.skills[key] = currentSkill.extend({
+                modifiers: [baseMod],
+                filter: this.#filterModifier,
+            }) as CharacterSkill;
+            this.actor.system.skills[skillShort] = mergeObject(
+                this.actor.system.skills[skillShort],
+                this.actor.skills[key].getTraceData()
+            );
         }
     }
 
     /** Clear out existing strikes and replace them with the form's stipulated ones, if any */
     #prepareStrikes(): void {
         const { synthetics } = this.actor;
+        const strikes = this.overrides.strikes ?? {};
 
-        const ruleData = Object.entries(this.overrides.strikes).map(([slug, strikeData]) => ({
+        const ruleData = Object.entries(strikes).map(([slug, strikeData]) => ({
             key: "Strike",
-            label: strikeData.label ?? `PF2E.BattleForm.Attack.${sluggify(slug, { camel: "bactrian" })}`,
+            label:
+                game.i18n.localize(strikeData.label) ??
+                `PF2E.BattleForm.Attack.${sluggify(slug, { camel: "bactrian" })}`,
             slug,
-            img: strikeData.img,
+            img: strikeData.img ?? BattleFormRuleElement.defaultIcons[slug] ?? this.item.img,
             category: strikeData.category,
             group: strikeData.group,
             baseItem: strikeData.baseType,
@@ -376,6 +375,8 @@ export class BattleFormRuleElement extends RuleElementPF2e {
             range: strikeData.range,
             maxRange: strikeData.maxRange,
             traits: strikeData.traits,
+            ability: strikeData.ability,
+            ownIfHigher: (strikeData.ownIfHigher ??= true),
         }));
 
         // Repopulate strikes with new WeaponPF2e instances--unless ownUnarmed is true
@@ -393,7 +394,7 @@ export class BattleFormRuleElement extends RuleElementPF2e {
 
             for (const datum of ruleData) {
                 if (!datum.traits.includes("magical")) datum.traits.push("magical");
-                new StrikeRuleElement({ ...datum, battleForm: true }, this.item).beforePrepareData();
+                new StrikeRuleElement({ ...datum, battleForm: true }, { parent: this.item }).beforePrepareData();
             }
         }
 
@@ -401,14 +402,11 @@ export class BattleFormRuleElement extends RuleElementPF2e {
             .prepareStrikes({
                 includeBasicUnarmed: this.ownUnarmed,
             })
-            .filter(
-                (a) =>
-                    (a.slug && a.slug in this.overrides.strikes) || (this.ownUnarmed && a.item.category === "unarmed")
-            );
+            .filter((a) => (a.slug && a.slug in strikes) || (this.ownUnarmed && a.item.category === "unarmed"));
         const strikeActions = this.actor.system.actions.flatMap((s): CharacterStrike[] => [s, ...s.altUsages]);
 
         for (const action of strikeActions) {
-            const strike = (this.overrides.strikes[action.slug ?? ""] ?? null) as BattleFormStrike | null;
+            const strike = (strikes[action.slug ?? ""] ?? null) as BattleFormStrike | null;
 
             if (
                 !this.ownUnarmed &&
@@ -434,31 +432,40 @@ export class BattleFormRuleElement extends RuleElementPF2e {
     /** Immunity, weakness, and resistance */
     #prepareIWR(): void {
         for (const immunity of this.overrides.immunities) {
-            new ImmunityRuleElement({ key: "Immunity", ...immunity }, this.item).beforePrepareData();
+            new ImmunityRuleElement({ key: "Immunity", ...immunity }, { parent: this.item }).afterPrepareData();
         }
         for (const weakness of this.overrides.weaknesses) {
-            new WeaknessRuleElement({ key: "Weakness", ...weakness, override: true }, this.item).beforePrepareData();
+            new WeaknessRuleElement(
+                { key: "Weakness", ...weakness, override: true },
+                { parent: this.item }
+            ).afterPrepareData();
         }
         for (const resistance of this.overrides.resistances) {
             new ResistanceRuleElement(
                 { key: "Resistance", ...resistance, override: true },
-                this.item
-            ).beforePrepareData();
+                { parent: this.item }
+            ).afterPrepareData();
         }
     }
 
     /** Disable ineligible check modifiers */
-    #suppressModifiers(statistic: StatisticModifier): void {
+    #suppressModifiers(statistic: { modifiers: readonly ModifierPF2e[] }): void {
         for (const modifier of statistic.modifiers) {
-            if (
-                (!["status", "circumstance"].includes(modifier.type) && modifier.modifier >= 0) ||
-                modifier.type === "ability"
-            ) {
+            if (!this.#filterModifier(modifier)) {
                 modifier.adjustments.push({ slug: null, predicate: new PredicatePF2e(), suppress: true });
                 modifier.ignored = true;
+                modifier.enabled = false;
             }
         }
-        statistic.calculateTotal();
+        if (statistic instanceof StatisticModifier) {
+            statistic.calculateTotal();
+        }
+    }
+
+    #filterModifier(modifier: ModifierPF2e) {
+        if (modifier.slug === "battle-form") return true;
+        if (modifier.type === "ability") return false;
+        return ["status", "circumstance"].includes(modifier.type) || modifier.modifier < 0;
     }
 
     #suppressNotes(notes: RollNotePF2e[]): void {
@@ -487,7 +494,7 @@ export class BattleFormRuleElement extends RuleElementPF2e {
             const isDamageTrait =
                 isExtraDice &&
                 /^(?:deadly|fatal)-\d?d\d{1,2}$/.test(modifier.slug) &&
-                tupleHasValue(this.overrides.strikes[weapon.slug ?? ""]?.traits ?? [], modifier.slug);
+                tupleHasValue(this.overrides?.strikes?.[weapon.slug ?? ""]?.traits ?? [], modifier.slug);
             const isBattleFormModifier = !!(
                 modifier.predicate.includes("battle-form") ||
                 modifier.predicate.some((s) => s instanceof Object && "or" in s && s.or.includes("battle-form")) ||
@@ -569,20 +576,14 @@ export class BattleFormRuleElement extends RuleElementPF2e {
     }
 }
 
-export interface BattleFormRuleElement extends RuleElementPF2e {
+interface BattleFormRuleElement
+    extends RuleElementPF2e<BattleFormRuleSchema>,
+        ModelPropsFromSchema<BattleFormRuleSchema> {
     get actor(): CharacterPF2e;
-    data: BattleFormData;
-}
-
-type PickedProperties = "overrides" | "canCast" | "canSpeak" | "hasHands" | "ownUnarmed";
-type RequiredBattleFormSource = Required<Pick<BattleFormSource, PickedProperties>>;
-interface BattleFormData extends RuleElementData, RequiredBattleFormSource {
-    key: "BattleForm";
-    overrides: Required<BattleFormOverrides> & {
-        armorClass: Required<BattleFormAC>;
-    };
 }
 
 interface ValueWithStrikes {
     strikes: Record<string, unknown>;
 }
+
+export { BattleFormRuleElement };

@@ -1,10 +1,10 @@
-import { ActorPF2e, PartyPF2e } from "@actor";
+import { ActorPF2e, type PartyPF2e } from "@actor";
 import { HitPointsSummary } from "@actor/base.ts";
-import { CreatureSource } from "@actor/data/index.ts";
 import { StrikeData } from "@actor/data/base.ts";
-import { MODIFIER_TYPE, MODIFIER_TYPES, ModifierPF2e, RawModifier, StatisticModifier } from "@actor/modifiers.ts";
-import { SaveType, SkillLongForm } from "@actor/types.ts";
-import { ArmorPF2e, ConditionPF2e, ItemPF2e, PhysicalItemPF2e } from "@item";
+import { CreatureSource } from "@actor/data/index.ts";
+import { MODIFIER_TYPES, ModifierPF2e, RawModifier, StatisticModifier } from "@actor/modifiers.ts";
+import { MovementType, SaveType, SkillLongForm } from "@actor/types.ts";
+import { ArmorPF2e, ItemPF2e, PhysicalItemPF2e } from "@item";
 import { isCycle } from "@item/container/helpers.ts";
 import { ArmorSource, ItemType } from "@item/data/index.ts";
 import { EquippedData, ItemCarryType } from "@item/physical/data.ts";
@@ -12,90 +12,45 @@ import { isEquipped } from "@item/physical/usage.ts";
 import { ActiveEffectPF2e } from "@module/active-effect.ts";
 import { Rarity, SIZES, SIZE_SLUGS } from "@module/data.ts";
 import { RollNotePF2e } from "@module/notes.ts";
+import { extractModifiers } from "@module/rules/helpers.ts";
 import { RuleElementSynthetics } from "@module/rules/index.ts";
-import { extractModifierAdjustments, extractModifiers } from "@module/rules/helpers.ts";
 import { BaseSpeedSynthetic } from "@module/rules/synthetics.ts";
-import { LightLevels } from "@scene/data.ts";
 import { UserPF2e } from "@module/user/index.ts";
-import { TokenDocumentPF2e } from "@scene/index.ts";
-import { CheckPF2e, CheckRoll } from "@system/check/index.ts";
-import { DamageType } from "@system/damage/types.ts";
-import { DAMAGE_CATEGORIES_UNIQUE } from "@system/damage/values.ts";
+import { LightLevels } from "@scene/data.ts";
+import type { TokenDocumentPF2e } from "@scene/index.ts";
+import { eventToRollParams } from "@scripts/sheet-util.ts";
+import type { CheckRoll } from "@system/check/index.ts";
 import { CheckDC } from "@system/degree-of-success.ts";
-import { PredicatePF2e, RawPredicate } from "@system/predication.ts";
-import { Statistic } from "@system/statistic/index.ts";
-import { ErrorPF2e, isObject, localizer, objectHasKey, setHasElement } from "@util";
+import type { ArmorStatistic } from "@system/statistic/armor-class.ts";
+import { Statistic, StatisticDifficultyClass } from "@system/statistic/index.ts";
+import { ErrorPF2e, isObject, localizer, setHasElement } from "@util";
 import {
     CreatureSkills,
     CreatureSpeeds,
     CreatureSystemData,
     LabeledSpeed,
-    MovementType,
     SenseData,
-    SkillData,
     VisionLevel,
     VisionLevels,
 } from "./data.ts";
 import { setImmunitiesFromTraits } from "./helpers.ts";
-import { ActorInitiative } from "../initiative.ts";
 import { CreatureSensePF2e } from "./sense.ts";
-import {
-    Alignment,
-    AlignmentTrait,
-    CreatureTrait,
-    CreatureUpdateContext,
-    GetReachParameters,
-    IsFlatFootedParams,
-} from "./types.ts";
+import { Alignment, AlignmentTrait, CreatureTrait, CreatureUpdateContext, GetReachParameters } from "./types.ts";
 import { SIZE_TO_REACH } from "./values.ts";
 
 /** An "actor" in a Pathfinder sense rather than a Foundry one: all should contain attributes and abilities */
 abstract class CreaturePF2e<
     TParent extends TokenDocumentPF2e | null = TokenDocumentPF2e | null
 > extends ActorPF2e<TParent> {
-    // Internal cached value for creature skills
-    protected _skills: CreatureSkills | null = null;
-
     declare parties: Set<PartyPF2e>;
+    /** A creature always has an AC */
+    declare armorClass: StatisticDifficultyClass<ArmorStatistic>;
+    /** Skill checks for the creature, built during data prep */
+    declare skills: CreatureSkills;
+    /** Saving throw rolls for the creature, built during data prep */
+    declare saves: Record<SaveType, Statistic>;
 
-    /** Skill `Statistic`s for the creature */
-    override get skills(): CreatureSkills {
-        if (this._skills) return this._skills;
-
-        this._skills = Object.entries(this.system.skills).reduce((current, [shortForm, skill]: [string, SkillData]) => {
-            if (!objectHasKey(this.system.skills, shortForm)) return current;
-            const longForm = skill.slug;
-            const skillName = game.i18n.localize(skill.label ?? CONFIG.PF2E.skills[shortForm]) || skill.slug;
-            const domains = ["all", "skill-check", longForm, `${skill.ability}-based`, `${skill.ability}-skill-check`];
-            if (skill.lore) domains.push("lore-skill-check");
-
-            current[longForm] = new Statistic(this, {
-                slug: longForm,
-                label: skillName,
-                lore: !!skill.lore,
-                proficient: skill.visible,
-                domains,
-                check: { type: "skill-check" },
-                modifiers: [...skill.modifiers],
-            });
-
-            if (shortForm !== longForm) {
-                Object.defineProperty(current, shortForm, {
-                    get: () => {
-                        console.warn(
-                            `Short-form skill abbreviations such as actor.skills.${shortForm} are deprecated.`,
-                            `Use actor.skills.${longForm} instead.`
-                        );
-                        return current[longForm];
-                    },
-                });
-            }
-
-            return current;
-        }, {} as CreatureSkills);
-
-        return this._skills;
-    }
+    declare perception: Statistic;
 
     /** The creature's position on the alignment axes */
     get alignment(): Alignment {
@@ -207,19 +162,6 @@ abstract class CreaturePF2e<
         return itemTypes.spellcastingEntry.length > 0 && itemTypes.spell.length > 0;
     }
 
-    get perception(): Statistic {
-        const stat = this.system.attributes.perception;
-        return new Statistic(this, {
-            slug: "perception",
-            label: "PF2E.PerceptionLabel",
-            check: {
-                label: "PF2E.PerceptionCheck",
-                type: "perception-check",
-            },
-            modifiers: [...stat.modifiers],
-        });
-    }
-
     get wornArmor(): ArmorPF2e<this> | null {
         return this.itemTypes.armor.find((armor) => armor.isEquipped && armor.isArmor) ?? null;
     }
@@ -255,29 +197,6 @@ abstract class CreaturePF2e<
               }, heldShields.slice(-1)[0]);
     }
 
-    /** Whether the actor is flat-footed in the current scene context: currently only handles flanking */
-    isFlatFooted({ dueTo }: IsFlatFootedParams): boolean {
-        // The first data preparation round will occur before the game is ready
-        if (!game.ready) return false;
-
-        if (dueTo === "flanking") {
-            const { flanking } = this.attributes;
-            if (!flanking.flankable) return false;
-
-            const rollOptions = this.getRollOptions();
-            if (typeof flanking.flatFootable === "number") {
-                flanking.flatFootable = !PredicatePF2e.test(
-                    [{ lte: ["origin:level", flanking.flatFootable] }],
-                    rollOptions
-                );
-            }
-
-            return flanking.flatFootable && PredicatePF2e.test(["origin:flanking"], rollOptions);
-        }
-
-        return false;
-    }
-
     override getStatistic(slug: SaveType | SkillLongForm | "perception"): Statistic;
     override getStatistic(slug: string): Statistic | null;
     override getStatistic(slug: string): Statistic | null {
@@ -287,9 +206,9 @@ abstract class CreaturePF2e<
                   super.getStatistic(slug);
     }
 
-    protected override _initialize(): void {
+    protected override _initialize(options?: Record<string, unknown>): void {
         this.parties ??= new Set();
-        super._initialize();
+        super._initialize(options);
     }
 
     override prepareData(): void {
@@ -302,10 +221,8 @@ abstract class CreaturePF2e<
     /** Setup base ephemeral data to be modified by active effects and derived-data preparation */
     override prepareBaseData(): void {
         super.prepareBaseData();
-        this._skills = null;
 
         const attributes = this.system.attributes;
-        attributes.hp = mergeObject(attributes.hp ?? {}, { negativeHealing: false });
         attributes.hardness ??= { value: 0 };
         attributes.flanking.canFlank = true;
         attributes.flanking.flankable = true;
@@ -399,6 +316,11 @@ abstract class CreaturePF2e<
         // Set whether this actor is wearing armor
         rollOptions.all["self:armored"] = !!this.wornArmor && this.wornArmor.category !== "unarmored";
 
+        // Set whether the actor's shield is raised
+        if (attributes.shield?.raised && !attributes.shield.broken) {
+            this.rollOptions.all["self:shield:raised"] = true;
+        }
+
         // Set whether this creature emits sound
         this.system.attributes.emitsSound = !this.isDead;
 
@@ -408,19 +330,6 @@ abstract class CreaturePF2e<
         const sizeSlug = SIZE_SLUGS[sizeIndex];
         rollOptions.all[`self:size:${sizeIndex}`] = true;
         rollOptions.all[`self:size:${sizeSlug}`] = true;
-
-        // Add modifiers from being flanked
-        if (this.isFlatFooted({ dueTo: "flanking" })) {
-            const name = game.i18n.localize("PF2E.Item.Condition.Flanked");
-            const condition = game.pf2e.ConditionManager.getCondition("flat-footed", { name });
-            const flatFooted = new ConditionPF2e(condition.toObject(), { parent: this });
-
-            const rule = flatFooted.prepareRuleElements().shift();
-            if (!rule) throw ErrorPF2e("Unexpected error retrieving condition");
-            rule.beforePrepareData?.();
-
-            this.rollOptions.all["self:condition:flat-footed"] = true;
-        }
 
         // Handle caps derived from dying
         attributes.wounded.max = Math.max(0, attributes.dying.max - 1);
@@ -437,24 +346,6 @@ abstract class CreaturePF2e<
         }
     }
 
-    protected prepareInitiative(): void {
-        if (!this.isOfType("character", "npc")) return;
-
-        const systemData = this.system;
-        const checkType = systemData.attributes.initiative.statistic || "perception";
-        const baseStatistic = this.skills[checkType] ?? this.perception;
-        const label = game.i18n.format("PF2E.InitiativeWithSkill", { skillName: baseStatistic.label });
-        const statistic = baseStatistic.extend({
-            slug: "initiative",
-            domains: ["initiative"],
-            check: { type: "initiative", label },
-            rollOptions: [baseStatistic.slug],
-        });
-
-        this.initiative = new ActorInitiative(this, statistic);
-        systemData.attributes.initiative = mergeObject(systemData.attributes.initiative, statistic.getTraceData());
-    }
-
     protected override prepareSynthetics(): void {
         super.prepareSynthetics();
         const { customModifiers } = this.system;
@@ -467,29 +358,6 @@ abstract class CreaturePF2e<
         }
     }
 
-    /** Add a circumstance bonus if this creature has a raised shield */
-    protected getShieldBonus(): ModifierPF2e | null {
-        if (!this.isOfType("character", "npc")) return null;
-        const shieldData = this.system.attributes.shield;
-        if (shieldData.raised && !shieldData.broken) {
-            const slug = "raised-shield";
-            this.rollOptions.all["self:shield:raised"] = true;
-            return new ModifierPF2e({
-                label: shieldData.name,
-                slug,
-                adjustments: extractModifierAdjustments(
-                    this.synthetics.modifierAdjustments,
-                    ["all", "dex-based", "ac"],
-                    slug
-                ),
-                type: MODIFIER_TYPE.CIRCUMSTANCE,
-                modifier: shieldData.ac,
-            });
-        }
-
-        return null;
-    }
-
     /**
      * Changes the carry type of an item (held/worn/stowed/etc) and/or regrips/reslots
      * @param item       The item
@@ -499,9 +367,15 @@ abstract class CreaturePF2e<
      */
     async adjustCarryType(
         item: PhysicalItemPF2e<CreaturePF2e>,
-        carryType: ItemCarryType,
-        handsHeld = 0,
-        inSlot = false
+        {
+            carryType,
+            handsHeld = 0,
+            inSlot = false,
+        }: {
+            carryType: ItemCarryType;
+            handsHeld?: number;
+            inSlot?: boolean;
+        }
     ): Promise<void> {
         const { usage } = item.system;
         if (carryType === "stowed") {
@@ -534,15 +408,8 @@ abstract class CreaturePF2e<
      * Adds a custom modifier that will be included when determining the final value of a stat. The slug generated by
      * the name parameter must be unique for the custom modifiers for the specified stat, or it will be ignored.
      */
-    async addCustomModifier(
-        stat: string,
-        label: string,
-        value: number,
-        type: string,
-        predicate: RawPredicate = [],
-        damageType?: DamageType,
-        damageCategory?: string
-    ): Promise<void> {
+    async addCustomModifier(stat: string, label: string, value: number, type: string): Promise<void> {
+        stat = stat === "armor" ? "ac" : stat;
         if (!this.isOfType("character", "npc")) return;
         if (stat.length === 0) throw ErrorPF2e("A custom modifier's statistic must be a non-empty string");
         if (label.length === 0) throw ErrorPF2e("A custom modifier's label must be a non-empty string");
@@ -555,15 +422,8 @@ abstract class CreaturePF2e<
                 label,
                 modifier: value,
                 type: modifierType,
-                predicate,
                 custom: true,
             }).toObject();
-            if (objectHasKey(CONFIG.PF2E.damageTypes, damageType)) {
-                modifier.damageType = damageType;
-            }
-            if (setHasElement(DAMAGE_CATEGORIES_UNIQUE, damageCategory)) {
-                modifier.damageCategory = damageCategory;
-            }
 
             await this.update({ [`system.customModifiers.${stat}`]: [...modifiers, modifier] });
         }
@@ -571,6 +431,7 @@ abstract class CreaturePF2e<
 
     /** Removes a custom modifier by slug */
     async removeCustomModifier(stat: string, slug: string): Promise<void> {
+        stat = stat === "armor" ? "ac" : stat;
         if (stat.length === 0) throw ErrorPF2e("A custom modifier's statistic must be a non-empty string");
 
         const customModifiers = this.toObject().system.customModifiers ?? {};
@@ -631,10 +492,15 @@ abstract class CreaturePF2e<
             }),
         ];
 
-        const modifier = new StatisticModifier(game.i18n.localize("PF2E.Check.Specific.Recovery"), []);
-        const token = this.getActiveTokens(false, true).shift();
-
-        return CheckPF2e.roll(modifier, { actor: this, token, dc, notes }, event);
+        return new Statistic(this, {
+            slug: "dying-recovery",
+            label: "PF2E.Check.Specific.Recovery",
+            check: { type: "flat-check" },
+        }).roll({
+            ...eventToRollParams(event),
+            dc,
+            extraRollNotes: notes,
+        });
     }
 
     /** Prepare derived creature senses from Rules Element synthetics */
@@ -672,7 +538,6 @@ abstract class CreaturePF2e<
             const fromSynthetics = (this.synthetics.movementTypes[movementType] ?? []).flatMap((d) => d() ?? []);
             landSpeed.value = Math.max(landSpeed.value, ...fromSynthetics.map((s) => s.value));
 
-            const base = landSpeed.value;
             const modifiers = extractModifiers(this.synthetics, domains);
             const stat: CreatureSpeeds = mergeObject(
                 new StatisticModifier(`${movementType}-speed`, modifiers, rollOptions),
@@ -684,15 +549,27 @@ abstract class CreaturePF2e<
             const otherData = {
                 type: "land",
                 label: statLabel,
-                total: base + stat.totalModifier,
-                breakdown: [
-                    `${game.i18n.format("PF2E.SpeedBaseLabel", { type: typeLabel })} ${landSpeed.value}`,
-                    ...stat.modifiers.filter((m) => m.enabled).map((m) => `${m.label} ${m.signedValue}`),
-                ].join(", "),
             };
             this.rollOptions.all["speed:land"] = true;
 
-            return mergeObject(stat, otherData);
+            const merged = mergeObject(stat, otherData);
+            Object.defineProperties(merged, {
+                total: {
+                    get(): number {
+                        return stat.value + stat.totalModifier;
+                    },
+                },
+                breakdown: {
+                    get(): string {
+                        return [
+                            `${game.i18n.format("PF2E.SpeedBaseLabel", { type: typeLabel })} ${stat.value}`,
+                            ...stat.modifiers.filter((m) => m.enabled).map((m) => `${m.label} ${m.signedValue}`),
+                        ].join(", ");
+                    },
+                },
+            });
+
+            return merged;
         } else {
             const candidateSpeeds = ((): (BaseSpeedSynthetic | LabeledSpeed)[] => {
                 const { otherSpeeds } = systemData.attributes.speed;
@@ -713,29 +590,35 @@ abstract class CreaturePF2e<
                 : ["speed", "all-speeds", `${movementType}-speed`];
             const rollOptions = this.getRollOptions(domains);
 
-            const label = game.i18n.format("PF2E.SpeedLabel", {
-                type: game.i18n.localize(CONFIG.PF2E.speedTypes[movementType]),
-            });
+            const label = game.i18n.localize(CONFIG.PF2E.speedTypes[movementType]);
             const speed: LabeledSpeed = { type: movementType, label, value: fastest.value };
             if (fastest.source) speed.source = fastest.source;
 
             this.rollOptions.all[`speed:${movementType}`] = true;
 
-            const base = speed.value;
             const modifiers = extractModifiers(this.synthetics, domains);
-            const stat = mergeObject(new StatisticModifier(`${movementType}-speed`, modifiers, rollOptions), speed, {
-                overwrite: false,
+            const stat = new StatisticModifier(`${movementType}-speed`, modifiers, rollOptions);
+            const merged = mergeObject(stat, speed, { overwrite: false });
+            Object.defineProperties(merged, {
+                total: {
+                    get(): number {
+                        return speed.value + stat.totalModifier;
+                    },
+                },
+                breakdown: {
+                    get(): string {
+                        return [`${game.i18n.format("PF2E.SpeedBaseLabel", { type: speed.label })} ${speed.value}`]
+                            .concat(
+                                stat.modifiers
+                                    .filter((m) => m.enabled)
+                                    .map((m) => `${m.label} ${m.modifier < 0 ? "" : "+"}${m.modifier}`)
+                            )
+                            .join(", ");
+                    },
+                },
             });
-            stat.total = base + stat.totalModifier;
-            stat.breakdown = [`${game.i18n.format("PF2E.SpeedBaseLabel", { type: speed.label })} ${base}`]
-                .concat(
-                    stat.modifiers
-                        .filter((m) => m.enabled)
-                        .map((m) => `${m.label} ${m.modifier < 0 ? "" : "+"}${m.modifier}`)
-                )
-                .join(", ");
 
-            return stat;
+            return merged;
         }
     }
 
@@ -748,7 +631,12 @@ abstract class CreaturePF2e<
         embeddedName: "ActiveEffect" | "Item",
         ids: string[],
         context?: DocumentModificationContext<this>
-    ): Promise<CollectionValue<this["effects"]>[] | CollectionValue<this["items"]>[]> {
+    ): Promise<ActiveEffectPF2e<this>[] | ItemPF2e<this>[]>;
+    override deleteEmbeddedDocuments(
+        embeddedName: "ActiveEffect" | "Item",
+        ids: string[],
+        context?: DocumentModificationContext<this>
+    ): Promise<foundry.abstract.Document<this>[]> {
         if (embeddedName === "Item") {
             const items = ids.map((id) => this.items.get(id));
             const linked = items.flatMap((item) => item?.getLinkedItems?.() ?? []);
@@ -762,13 +650,14 @@ abstract class CreaturePF2e<
         changed: DeepPartial<this["_source"]>,
         options: CreatureUpdateContext<TParent>,
         user: UserPF2e
-    ): Promise<void> {
+    ): Promise<boolean | void> {
         // Clamp hit points
-        const hitPoints = changed.system?.attributes?.hp;
-        if (typeof hitPoints?.value === "number") {
-            hitPoints.value = options.allowHPOverage
-                ? Math.max(0, hitPoints.value)
-                : Math.clamped(hitPoints.value, 0, this.hitPoints.max);
+        const currentHP = this.hitPoints;
+        const changedHP = changed.system?.attributes?.hp;
+        if (typeof changedHP?.value === "number") {
+            changedHP.value = options.allowHPOverage
+                ? Math.max(0, changedHP.value)
+                : Math.clamped(changedHP.value, 0, Math.max(currentHP.max - currentHP.unrecoverable, 0));
         }
 
         // Clamp focus points
@@ -784,16 +673,13 @@ abstract class CreaturePF2e<
             if (this.isToken) options.diff = false; // Force an update and sheet re-render
         }
 
-        await super._preUpdate(changed, options, user);
+        return super._preUpdate(changed, options, user);
     }
 }
 
 interface CreaturePF2e<TParent extends TokenDocumentPF2e | null = TokenDocumentPF2e | null> extends ActorPF2e<TParent> {
     readonly _source: CreatureSource;
     system: CreatureSystemData;
-
-    /** Saving throw rolls for the creature, built during data prep */
-    saves: Record<SaveType, Statistic>;
 
     get traits(): Set<CreatureTrait>;
 
@@ -823,17 +709,17 @@ interface CreaturePF2e<TParent extends TokenDocumentPF2e | null = TokenDocumentP
         embeddedName: "ActiveEffect",
         ids: string[],
         context?: DocumentModificationContext<this>
-    ): Promise<CollectionValue<this["effects"]>[]>;
+    ): Promise<ActiveEffectPF2e<this>[]>;
     deleteEmbeddedDocuments(
         embeddedName: "Item",
         ids: string[],
         context?: DocumentModificationContext<this>
-    ): Promise<CollectionValue<this["items"]>[]>;
+    ): Promise<ItemPF2e<this>[]>;
     deleteEmbeddedDocuments(
         embeddedName: "ActiveEffect" | "Item",
         ids: string[],
         context?: DocumentModificationContext<this>
-    ): Promise<CollectionValue<this["effects"]>[] | CollectionValue<this["items"]>[]>;
+    ): Promise<ActiveEffectPF2e<this>[] | ItemPF2e<this>[]>;
 }
 
 export { CreaturePF2e };

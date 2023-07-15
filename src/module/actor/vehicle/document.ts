@@ -4,11 +4,14 @@ import { ItemType } from "@item/data/index.ts";
 import { extractModifierAdjustments, extractModifiers } from "@module/rules/helpers.ts";
 import { UserPF2e } from "@module/user/index.ts";
 import { TokenDocumentPF2e } from "@scene/index.ts";
-import { Statistic } from "@system/statistic/index.ts";
+import { ArmorStatistic } from "@system/statistic/armor-class.ts";
+import { Statistic, StatisticDifficultyClass } from "@system/statistic/index.ts";
 import { ActorPF2e, HitPointsSummary } from "../base.ts";
 import { TokenDimensions, VehicleSource, VehicleSystemData } from "./data.ts";
 
 class VehiclePF2e<TParent extends TokenDocumentPF2e | null = TokenDocumentPF2e | null> extends ActorPF2e<TParent> {
+    declare armorClass: StatisticDifficultyClass<ArmorStatistic>;
+
     override get allowedItemTypes(): (ItemType | "physical")[] {
         return [...super.allowedItemTypes, "physical", "action"];
     }
@@ -22,6 +25,10 @@ class VehiclePF2e<TParent extends TokenDocumentPF2e | null = TokenDocumentPF2e |
         };
     }
 
+    override get hardness(): number {
+        return this.system.attributes.hardness;
+    }
+
     getTokenDimensions(dimensions: Omit<ActorDimensions, "height"> = this.dimensions): TokenDimensions {
         return {
             width: Math.max(Math.round(dimensions.width / 5), 1),
@@ -32,10 +39,7 @@ class VehiclePF2e<TParent extends TokenDocumentPF2e | null = TokenDocumentPF2e |
     override prepareBaseData(): void {
         super.prepareBaseData();
 
-        // Vehicles never have negative healing
-        const { attributes, details } = this.system;
-        attributes.hp.negativeHealing = false;
-        details.alliance = null;
+        this.system.details.alliance = null;
 
         // Set the dimensions of this vehicle in its size object
         const { size } = this.system.traits;
@@ -117,21 +121,18 @@ class VehiclePF2e<TParent extends TokenDocumentPF2e | null = TokenDocumentPF2e |
         }
 
         // Prepare AC
-        const ac = new Statistic(this, {
-            slug: "ac",
-            label: "PF2E.ArmorClassLabel",
-            domains: ["all", "ac"],
+        const armorStatistic = new ArmorStatistic(this, {
             modifiers: [
                 new ModifierPF2e({
                     slug: "base",
                     label: "PF2E.ModifierTitle",
-                    modifier: this.system.attributes.ac.value,
+                    modifier: this.system.attributes.ac.value - 10,
                     adjustments: extractModifierAdjustments(modifierAdjustments, ["all", "ac"], "base"),
                 }),
             ],
-            dc: { base: 0 },
         });
-        this.system.attributes.ac = ac.getTraceData({ value: "dc" });
+        this.armorClass = armorStatistic.dc;
+        this.system.attributes.ac = armorStatistic.getTraceData();
 
         this.prepareSaves();
     }
@@ -169,8 +170,10 @@ class VehiclePF2e<TParent extends TokenDocumentPF2e | null = TokenDocumentPF2e |
         changed: DeepPartial<VehicleSource>,
         options: DocumentModificationContext<TParent>,
         user: UserPF2e
-    ): Promise<void> {
-        await super._preUpdate(changed, options, user);
+    ): Promise<boolean | void> {
+        const result = await super._preUpdate(changed, options, user);
+        if (result === false) return result;
+
         if (this.prototypeToken.flags?.pf2e?.linkToActorSize) {
             const { space } = this.system.details;
             const spaceUpdates = {
@@ -178,7 +181,7 @@ class VehiclePF2e<TParent extends TokenDocumentPF2e | null = TokenDocumentPF2e |
                 length: changed.system?.details?.space?.long ?? space.long,
             };
             const tokenDimensions = this.getTokenDimensions(spaceUpdates);
-            mergeObject(changed, { token: tokenDimensions });
+            changed.prototypeToken = mergeObject(changed.prototypeToken ?? {}, tokenDimensions);
 
             if (canvas.scene) {
                 const updates = this.getActiveTokens()

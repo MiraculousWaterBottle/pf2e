@@ -1,14 +1,15 @@
-import fs from "fs-extra";
-import path from "path";
-import { populateFoundryUtilFunctions } from "../tests/fixtures/foundryshim.ts";
 import { ActorSourcePF2e } from "@actor/data/index.ts";
 import { ItemSourcePF2e } from "@item/data/index.ts";
-import { JSDOM } from "jsdom";
 import { sluggify } from "@util";
+import fs from "fs-extra";
+import { JSDOM } from "jsdom";
+import path from "path";
+import { populateFoundryUtilFunctions } from "../tests/fixtures/foundryshim.ts";
+import { getFilesRecursively } from "./lib/helpers.ts";
+
 import { MigrationBase } from "@module/migration/base.ts";
 import { MigrationRunnerBase } from "@module/migration/runner/base.ts";
-import { Migration819SpinTaleAdventureSpecific } from "@module/migration/migrations/819-spin-tale-adventure-specific.ts";
-import { Migration820RemoveUnusedTraitsData } from "@module/migration/migrations/820-remove-unused-traits-data.ts";
+
 import { Migration821InlineDamageRolls } from "@module/migration/migrations/821-inline-damage-rolls.ts";
 import { Migration822BladeAllyConsolidation } from "@module/migration/migrations/822-blade-ally-consolidation.ts";
 import { Migration824SneakAttackDamageSource } from "@module/migration/migrations/824-sneak-attack-damage-source.ts";
@@ -25,6 +26,13 @@ import { Migration834FeatCategories } from "@module/migration/migrations/834-fea
 import { Migration835InitiativeLongform } from "@module/migration/migrations/835-initiative-longform.ts";
 import { Migration836EnergizingConsolidation } from "@module/migration/migrations/836-energizing-consolidation.ts";
 import { Migration837MoveHazardBookSources } from "@module/migration/migrations/837-move-hazard-book-source.ts";
+import { Migration838StrikeAttackRollSelector } from "@module/migration/migrations/838-strike-attack-roll-selector.ts";
+import { Migration839ActionCategories } from "@module/migration/migrations/839-action-categories.ts";
+import { Migration841V11UUIDFormat } from "@module/migration/migrations/841-v11-uuid-format.ts";
+import { Migration844DeityDomainUUIDs } from "@module/migration/migrations/844-deity-domains-uuids.ts";
+import { Migration846SpellSchoolOptional } from "@module/migration/migrations/846-spell-school-optional.ts";
+import { Migration847TempHPRuleEvents } from "@module/migration/migrations/847-temp-hp-rule-events.ts";
+import { Migration848NumericArmorProperties } from "@module/migration/migrations/848-numeric-armor-properties.ts";
 
 // ^^^ don't let your IDE use the index in these imports. you need to specify the full path ^^^
 
@@ -35,8 +43,6 @@ globalThis.HTMLParagraphElement = window.HTMLParagraphElement;
 globalThis.Text = window.Text;
 
 const migrations: MigrationBase[] = [
-    new Migration819SpinTaleAdventureSpecific(),
-    new Migration820RemoveUnusedTraitsData(),
     new Migration821InlineDamageRolls(),
     new Migration822BladeAllyConsolidation(),
     new Migration824SneakAttackDamageSource(),
@@ -53,6 +59,13 @@ const migrations: MigrationBase[] = [
     new Migration835InitiativeLongform(),
     new Migration836EnergizingConsolidation(),
     new Migration837MoveHazardBookSources(),
+    new Migration838StrikeAttackRollSelector(),
+    new Migration839ActionCategories(),
+    new Migration841V11UUIDFormat(),
+    new Migration844DeityDomainUUIDs(),
+    new Migration846SpellSchoolOptional(),
+    new Migration847TempHPRuleEvents(),
+    new Migration848NumericArmorProperties(),
 ];
 
 global.deepClone = <T>(original: T): T => {
@@ -83,7 +96,7 @@ global.randomID = function randomID(length = 16): string {
     return id.substring(0, length);
 };
 
-const packsDataPath = path.resolve(process.cwd(), "packs/data");
+const packsDataPath = path.resolve(process.cwd(), "packs");
 
 type CompendiumSource = CompendiumDocument["_source"];
 
@@ -154,24 +167,11 @@ function JSONstringifyOrder(obj: object): string {
     return `${newJson}\n`;
 }
 
-async function getAllFiles(): Promise<string[]> {
-    const allEntries: string[] = [];
-    const packs = fs.readdirSync(packsDataPath);
+async function getAllFiles(directory: string = packsDataPath, allEntries: string[] = []): Promise<string[]> {
+    const packs = fs.readdirSync(directory);
     for (const pack of packs) {
         console.log(`Collecting data for "${pack}"`);
-
-        let packFiles: string[];
-        try {
-            // Create an array of files in the ./packs/data/[packname].db/ directory
-            packFiles = fs.readdirSync(path.resolve(packsDataPath, pack));
-        } catch (error) {
-            if (error instanceof Error) console.error(error.message);
-            return [];
-        }
-
-        for (const fileName of packFiles) {
-            allEntries.push(path.resolve(packsDataPath, pack, fileName));
-        }
+        allEntries.push(...getFilesRecursively(path.join(directory, pack)));
     }
 
     return allEntries;

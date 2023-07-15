@@ -1,12 +1,12 @@
 import {
     ARMOR_MATERIAL_VALUATION_DATA,
     CoinsPF2e,
-    getPropertySlots,
     PhysicalItemSheetData,
     PhysicalItemSheetPF2e,
     PreparedMaterials,
+    getPropertySlots,
 } from "@item/physical/index.ts";
-import { createSheetTags, SheetOptions } from "@module/sheet/helpers.ts";
+import { SheetOptions, createSheetTags } from "@module/sheet/helpers.ts";
 import { ArmorCategory, ArmorGroup, ArmorPF2e, BaseArmorType } from "./index.ts";
 
 class ArmorSheetPF2e extends PhysicalItemSheetPF2e<ArmorPF2e> {
@@ -14,10 +14,10 @@ class ArmorSheetPF2e extends PhysicalItemSheetPF2e<ArmorPF2e> {
         const sheetData = await super.getData(options);
 
         // Armor property runes
-        const totalSlots = getPropertySlots(this.item);
+        const maxPropertySlots = getPropertySlots(this.item);
         const propertyRuneSlots: Record<`propertyRuneSlots${number}`, boolean> = {};
         for (const slot of [1, 2, 3, 4]) {
-            if (totalSlots >= slot) {
+            if (slot <= maxPropertySlots) {
                 propertyRuneSlots[`propertyRuneSlots${slot}`] = true;
             }
         }
@@ -43,6 +43,9 @@ class ArmorSheetPF2e extends PhysicalItemSheetPF2e<ArmorPF2e> {
     protected override async _updateObject(event: Event, formData: Record<string, unknown>): Promise<void> {
         formData["system.potencyRune.value"] ||= null;
         formData["system.resiliencyRune.value"] ||= null;
+        if (formData["system.acBonus"] === null) {
+            formData["system.acBonus"] = 0;
+        }
         for (const slotNumber of [1, 2, 3, 4]) {
             formData[`system.propertyRune${slotNumber}.value`] ||= null;
         }

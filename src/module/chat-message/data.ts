@@ -11,19 +11,26 @@ interface ChatMessageSourcePF2e extends foundry.documents.ChatMessageSource {
     flags: ChatMessageFlagsPF2e;
 }
 
+export interface ItemOriginFlag {
+    type: ItemType;
+    uuid: string;
+    castLevel?: number;
+    variant?: { overlays: string[] };
+}
+
 type ChatMessageFlagsPF2e = foundry.documents.ChatMessageFlags & {
     pf2e: {
         damageRoll?: DamageRollFlag;
         context?: ChatContextFlag;
-        origin?: { type: ItemType; uuid: string } | null;
-        casting?: { id: string; level: number; tradition: MagicTradition } | null;
+        origin?: ItemOriginFlag | null;
+        casting?: { id: string; tradition: MagicTradition } | null;
         modifierName?: string;
         modifiers?: BaseRawModifier[];
         preformatted?: "flavor" | "content" | "both";
         isFromConsumable?: boolean;
         journalEntry?: DocumentUUID;
-        spellVariant?: { overlayIds: string[] };
         strike?: StrikeLookupData | null;
+        appliedDamage?: AppliedDamageFlag | null;
         [key: string]: unknown;
     };
     core: NonNullable<foundry.documents.ChatMessageFlags["core"]>;
@@ -96,11 +103,25 @@ interface SpellCastContextFlag {
     type: "spell-cast";
     domains: string[];
     options: string[];
+    outcome?: DegreeOfSuccessString;
     /** The roll mode (i.e., 'roll', 'blindroll', etc) to use when rendering this roll. */
     rollMode?: RollMode;
 }
 
+interface AppliedDamageFlag {
+    uuid: ActorUUID;
+    isHealing: boolean;
+    isReverted?: boolean;
+    persistent: string[];
+    shield: {
+        id: string;
+        damage: number;
+    } | null;
+    updates: { path: string; value: number }[];
+}
+
 export {
+    AppliedDamageFlag,
     ChatContextFlag,
     ChatMessageSourcePF2e,
     ChatMessageFlagsPF2e,

@@ -8,10 +8,9 @@ import { CheckRoll } from "@system/check/index.ts";
 import { LaxSchemaField, PredicateField, SlugField } from "@system/schema-data-fields.ts";
 import { isObject, tupleHasValue } from "@util";
 import type { DataModelValidationOptions } from "types/foundry/common/abstract/data.d.ts";
-import { BracketedValue, RuleElementData, RuleElementSchema, RuleElementSource, RuleValue } from "./data.ts";
+import { BracketedValue, RuleElementSchema, RuleElementSource, RuleValue } from "./data.ts";
 
 const { DataModel } = foundry.abstract;
-const { fields } = foundry.data;
 
 /**
  * Rule Elements allow you to modify actorData and tokenData values when present on items. They can be configured
@@ -19,9 +18,10 @@ const { fields } = foundry.data;
  *
  * @category RuleElement
  */
-abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSchema> extends DataModel<null, TSchema> {
-    data: RuleElementData;
-
+abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSchema> extends DataModel<
+    ItemPF2e<ActorPF2e>,
+    TSchema
+> {
     sourceIndex: number | null;
 
     protected suppressWarnings: boolean;
@@ -33,9 +33,10 @@ abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSc
      * @param source unserialized JSON data from the actual rule input
      * @param item where the rule is persisted on
      */
-    constructor(source: RuleElementSource, public item: ItemPF2e<ActorPF2e>, options: RuleElementOptions = {}) {
-        source.label ??= item.name;
-        super(source, { strict: false });
+    constructor(source: RuleElementSource, options: RuleElementOptions) {
+        source.label ??= options.parent.name;
+        super(source, { parent: options.parent, strict: true, fallback: false });
+        const { item } = this;
 
         // Always suppress warnings if the actor has no ID (and is therefore a temporary clone)
         this.suppressWarnings = options.suppressWarnings ?? !this.actor.id;
@@ -44,7 +45,7 @@ abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSc
         const validActorType = tupleHasValue(this.constructor.validActorTypes, item.actor.type);
         if (!validActorType) {
             const ruleName = game.i18n.localize(`PF2E.RuleElement.${this.key}`);
-            const actorType = game.i18n.localize(`ACTOR.Type${item.actor.type.titleCase()}`);
+            const actorType = game.i18n.localize(`TYPES.Actor.${item.actor.type}`);
             console.warn(`PF2e System | A ${ruleName} rules element may not be applied to a ${actorType}`);
             source.ignored = true;
         }
@@ -53,14 +54,6 @@ abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSc
             typeof source.label === "string"
                 ? game.i18n.localize(this.resolveInjectedProperties(source.label))
                 : item.name;
-
-        this.data = {
-            ...source,
-            key: this.key,
-            predicate: Array.isArray(source.predicate) ? source.predicate : undefined,
-            label: this.label,
-            removeUponCreate: Boolean(source.removeUponCreate ?? false),
-        } as RuleElementData;
 
         if (this.invalid) {
             this.ignored = true;
@@ -72,7 +65,9 @@ abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSc
             // The DataModel schema defaulted `ignored` to `false`: only change to true if not already true
             if (this.ignored === false) {
                 this.ignored =
-                    (!!this.requiresEquipped && !item.isEquipped) || (!!this.requiresInvestment && !item.isInvested);
+                    (!!this.requiresEquipped && !item.isEquipped) ||
+                    item.system.equipped.carryType === "dropped" ||
+                    (!!this.requiresInvestment && !item.isInvested);
             }
         } else {
             this.requiresEquipped = null;
@@ -81,6 +76,7 @@ abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSc
     }
 
     static override defineSchema(): RuleElementSchema {
+        const { fields } = foundry.data;
         return {
             key: new fields.StringField({ required: true, nullable: false, blank: false, initial: undefined }),
             slug: new SlugField({ required: true, nullable: true }),
@@ -104,8 +100,12 @@ abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSc
         return schema;
     }
 
+    get item(): this["parent"] {
+        return this.parent;
+    }
+
     get actor(): ActorPF2e {
-        return this.item.actor;
+        return this.parent.actor;
     }
 
     /** Retrieves the token from the actor, or from the active tokens. */
@@ -118,10 +118,27 @@ abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSc
         return controlled?.document ?? tokens.shift()?.document ?? null;
     }
 
-    /** Disallow invalid data fallbacks */
+    /** Generate a label without a leading title (such as "Effect:") */
+    protected getReducedLabel(label = this.label): string {
+        return label.includes(":") ? label.replace(/^[^:]+:\s*|\s*\([^)]+\)$/g, "") : label;
+    }
+
+    /** Include parent item's name and UUID in `DataModel` validation error messages */
     override validate(options: DataModelValidationOptions = {}): boolean {
-        options.fallback = false;
-        return super.validate(options);
+        try {
+            return super.validate(options);
+        } catch (error) {
+            if (error instanceof foundry.data.validation.DataModelValidationError) {
+                const message = error.message.replace(
+                    /validation errors|Joint Validation Error/,
+                    `validation errors on item ${this.item.name} (${this.item.uuid})`
+                );
+                console.warn(message);
+                return false;
+            } else {
+                throw error;
+            }
+        }
     }
 
     /** Test this rule element's predicate, if present */
@@ -129,8 +146,11 @@ abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSc
         if (this.ignored) return false;
         if (this.predicate.length === 0) return true;
 
-        const optionSet =
-            rollOptions instanceof Set ? rollOptions : new Set(rollOptions ?? this.actor.getRollOptions());
+        const optionSet = new Set([
+            ...(rollOptions ?? this.actor.getRollOptions()),
+            // Always include the item roll options of this rule element's parent item
+            ...this.item.getRollOptions("parent"),
+        ]);
 
         return this.resolveInjectedProperties(this.predicate).test(optionSet);
     }
@@ -164,12 +184,17 @@ abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSc
      *   }
      * }
      *
-     * @param source string that should be parsed
+     * @param source The string that is to be resolved
+     * @param options.warn Whether to warn on a failed resolution
      * @return the looked up value on the specific object
      */
-    resolveInjectedProperties<T extends string | number | object | null | undefined>(source: T): T;
+    resolveInjectedProperties<T extends string | number | object | null | undefined>(
+        source: T,
+        options?: { warn?: boolean }
+    ): T;
     resolveInjectedProperties(
-        source: string | number | object | null | undefined
+        source: string | number | object | null | undefined,
+        { warn = true } = {}
     ): string | number | object | null | undefined {
         if (source === null || typeof source === "number" || (typeof source === "string" && !source.includes("{"))) {
             return source;
@@ -178,22 +203,23 @@ abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSc
         // Walk the object tree and resolve any string values found
         if (Array.isArray(source)) {
             for (let i = 0; i < source.length; i++) {
-                source[i] = this.resolveInjectedProperties(source[i]);
+                source[i] = this.resolveInjectedProperties(source[i], { warn });
             }
         } else if (isObject<Record<string, unknown>>(source)) {
             for (const [key, value] of Object.entries(source)) {
                 if (typeof value === "string" || isObject(value)) {
-                    source[key] = this.resolveInjectedProperties(value);
+                    source[key] = this.resolveInjectedProperties(value, { warn });
                 }
             }
 
             return source;
         } else if (typeof source === "string") {
             return source.replace(/{(actor|item|rule)\|(.*?)}/g, (_match, key: string, prop: string) => {
-                const data = key === "rule" ? this.data : key === "actor" || key === "item" ? this[key] : this.item;
+                const data = key === "rule" ? this : key === "actor" || key === "item" ? this[key] : this.item;
                 const value = getProperty(data, prop);
                 if (value === undefined) {
-                    this.failValidation("Failed to resolve injected property");
+                    this.ignored = true;
+                    if (warn) this.failValidation(`Failed to resolve injected property "${source}"`);
                 }
                 return String(value);
             });
@@ -217,92 +243,59 @@ abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSc
      * @param defaultValue if no value is found, use that one
      * @return the evaluated value
      */
-    protected resolveValue(
-        valueData = this.data.value,
+    resolveValue(
+        value: unknown,
         defaultValue: Exclude<RuleValue, BracketedValue> = 0,
-        { evaluate = true, resolvables = {} }: { evaluate?: boolean; resolvables?: Record<string, unknown> } = {}
+        { evaluate = true, resolvables = {}, warn = true }: ResolveValueParams = {}
     ): number | string | boolean | object | null {
-        let value: RuleValue = valueData ?? defaultValue ?? null;
-
-        if (["number", "boolean"].includes(typeof value) || value === null) {
+        value ??= defaultValue ?? null;
+        if (typeof value === "number" || typeof value === "boolean" || value === null) {
             return value;
         }
-        if (typeof value === "string") value = this.resolveInjectedProperties(value);
+        value = this.resolveInjectedProperties(value, { warn });
 
-        // Include worn armor as resolvable for PCs since there is guaranteed to be no more than one
-        if (this.actor.isOfType("character")) {
-            resolvables.armor = this.actor.wornArmor;
+        const resolvedFromBracket = this.isBracketedValue(value)
+            ? this.#resolveBracketedValue(value, defaultValue)
+            : value;
+
+        if (resolvedFromBracket instanceof Object) {
+            return defaultValue instanceof Object
+                ? mergeObject(defaultValue, resolvedFromBracket, { inplace: false })
+                : resolvedFromBracket;
         }
 
-        if (this.isBracketedValue(valueData)) {
-            const bracketNumber = ((): number => {
-                if (!valueData?.field) return this.actor.level;
-                const field = String(valueData.field);
-                const separator = field.indexOf("|");
-                const source = field.substring(0, separator);
-                const { actor, item } = this;
-
-                switch (source) {
-                    case "actor": {
-                        return (
-                            Number(getProperty({ ...actor, data: actor.system }, field.substring(separator + 1))) || 0
-                        );
+        if (typeof resolvedFromBracket === "string") {
+            const saferEval = (formula: string): number => {
+                try {
+                    // If any resolvables were not provided for this formula, return the default value
+                    const unresolveds = formula.match(/@[a-z]+/gi) ?? [];
+                    // Allow failure of "@target" with no warning
+                    if (unresolveds.length > 0) {
+                        if (!unresolveds.every((u) => u === "@target")) {
+                            this.ignored = true;
+                            if (warn) this.failValidation(`Failed to resolve all components of formula, "${formula}"`);
+                        }
+                        return 0;
                     }
-                    case "item": {
-                        return Number(getProperty({ ...item, data: item.system }, field.substring(separator + 1))) || 0;
-                    }
-                    case "rule": {
-                        return Number(getProperty(this.data, field.substring(separator + 1))) || 0;
-                    }
-                    default:
-                        return Number(getProperty({ ...actor, data: actor.system }, field.substring(0))) || 0;
-                }
-            })();
-            const brackets = valueData?.brackets ?? [];
-            // Set the fallthrough (the value set when no bracket matches) to be of the same type as the default value
-            const bracketFallthrough = (() => {
-                switch (typeof defaultValue) {
-                    case "number":
-                    case "boolean":
-                    case "object":
-                        return defaultValue;
-                    case "string":
-                        return Number.isNaN(Number(defaultValue)) ? defaultValue : Number(defaultValue);
-                    default:
-                        return null;
-                }
-            })();
-            value =
-                brackets.find((bracket) => {
-                    const start = bracket.start ?? 0;
-                    const end = bracket.end ?? Infinity;
-                    return start <= bracketNumber && end >= bracketNumber;
-                })?.value ?? bracketFallthrough;
-        }
-
-        const saferEval = (formula: string): number => {
-            try {
-                // If any resolvables were not provided for this formula, return the default value
-                const unresolveds = formula.match(/@[a-z]+/gi) ?? [];
-                // Allow failure of "@target" with no warning
-                if (unresolveds.length > 0) {
-                    if (!unresolveds.every((u) => u === "@target")) {
-                        this.failValidation(`Failed to resolve all components of formula, "${formula}"`);
-                    }
+                    return Roll.safeEval(formula);
+                } catch {
+                    this.failValidation(`Error thrown while attempting to evaluate formula, "${formula}"`);
                     return 0;
                 }
-                return Roll.safeEval(formula);
-            } catch {
-                this.failValidation(`Error thrown while attempting to evaluate formula, "${formula}"`);
-                return 0;
-            }
-        };
+            };
 
-        return value instanceof Object && defaultValue instanceof Object
-            ? mergeObject(defaultValue, value, { inplace: false })
-            : typeof value === "string" && value.includes("@") && evaluate
-            ? saferEval(Roll.replaceFormulaData(value, { actor: this.actor, item: this.item, ...resolvables }))
-            : value;
+            // Include worn armor as resolvable for PCs since there is guaranteed to be no more than one
+            if (this.actor.isOfType("character")) {
+                resolvables.armor = this.actor.wornArmor;
+            }
+
+            const trimmed = resolvedFromBracket.trim();
+            return (trimmed.includes("@") || /^\d+$/.test(trimmed)) && evaluate
+                ? saferEval(Roll.replaceFormulaData(trimmed, { actor: this.actor, item: this.item, ...resolvables }))
+                : trimmed;
+        }
+
+        return defaultValue;
     }
 
     protected isBracketedValue(value: unknown): value is BracketedValue {
@@ -312,11 +305,56 @@ abstract class RuleElementPF2e<TSchema extends RuleElementSchema = RuleElementSc
             (typeof value.field === "string" || !("fields" in value))
         );
     }
+
+    #resolveBracketedValue(
+        value: BracketedValue,
+        defaultValue: Exclude<RuleValue, BracketedValue>
+    ): Exclude<RuleValue, BracketedValue> {
+        const bracketNumber = ((): number => {
+            if (!value.field) return this.actor.level;
+            const field = String(value.field);
+            const separator = field.indexOf("|");
+            const source = field.substring(0, separator);
+            const { actor, item } = this;
+
+            switch (source) {
+                case "actor":
+                    return Number(getProperty(actor, field.substring(separator + 1))) || 0;
+                case "item":
+                    return Number(getProperty(item, field.substring(separator + 1))) || 0;
+                case "rule":
+                    return Number(getProperty(this, field.substring(separator + 1))) || 0;
+                default:
+                    return Number(getProperty(actor, field.substring(0))) || 0;
+            }
+        })();
+        const brackets = value.brackets ?? [];
+        // Set the fallthrough (the value set when no bracket matches) to be of the same type as the default value
+        const bracketFallthrough = (() => {
+            switch (typeof defaultValue) {
+                case "number":
+                case "boolean":
+                case "object":
+                    return defaultValue;
+                case "string":
+                    return Number.isNaN(Number(defaultValue)) ? defaultValue : Number(defaultValue);
+                default:
+                    return null;
+            }
+        })();
+        return (
+            brackets.find((bracket) => {
+                const start = bracket.start ?? 0;
+                const end = bracket.end ?? Infinity;
+                return start <= bracketNumber && end >= bracketNumber;
+            })?.value ?? bracketFallthrough
+        );
+    }
 }
 
 interface RuleElementPF2e<TSchema extends RuleElementSchema>
-    extends foundry.abstract.DataModel<null, TSchema>,
-        foundry.data.fields.ModelPropsFromSchema<RuleElementSchema> {
+    extends foundry.abstract.DataModel<ItemPF2e<ActorPF2e>, TSchema>,
+        ModelPropsFromSchema<RuleElementSchema> {
     constructor: typeof RuleElementPF2e<TSchema>;
 
     /**
@@ -413,7 +451,7 @@ namespace RuleElementPF2e {
 
     export interface PreCreateParams<T extends RuleElementSource = RuleElementSource> {
         /** The source partial of the rule element's parent item to be created */
-        itemSource: PreCreate<ItemSourcePF2e>;
+        itemSource: ItemSourcePF2e;
         /** The source of the rule in `itemSource`'s `system.rules` array */
         ruleSource: T;
         /** All items pending creation in a `ItemPF2e.createDocuments` call */
@@ -437,15 +475,20 @@ namespace RuleElementPF2e {
         domains: string[];
         rollOptions: Set<string>;
     }
-
-    export type UserInput<T extends RuleElementData> = { [K in keyof T]?: unknown } & RuleElementSource;
 }
 
-interface RuleElementOptions {
+interface ResolveValueParams {
+    evaluate?: boolean;
+    resolvables?: Record<string, unknown>;
+    warn?: boolean;
+}
+
+type RuleElementOptions = {
+    parent: ItemPF2e<ActorPF2e>;
     /** If created from an item, the index in the source data */
     sourceIndex?: number;
     /** If data validation fails for any reason, do not emit console warnings */
     suppressWarnings?: boolean;
-}
+};
 
-export { RuleElementPF2e, RuleElementOptions };
+export { RuleElementOptions, RuleElementPF2e };
